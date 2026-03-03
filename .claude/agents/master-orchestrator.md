@@ -741,10 +741,53 @@ python3 {EVOLUTION_TRACKER} cross-correlate \
 
 - **On failure**: Log warning, continue without cross-evolution data.
 
+### 5.1.2.5 Prepare Integrated Execution Summary (Python — v2.4.0)
+
+> **Purpose**: 각 WF의 priority-ranked + classified-signals에서 실행 집계(신호 수, 평균 pSST,
+> Top-N 수)를 추출하여 `integrated-exec-summary-{date}.json`을 생성한다.
+> Section 8.4 (`WF*_SIGNAL_COUNT`, `WF*_TOP_COUNT`, `WF*_AVG_PSST` 등)를 Python이 채운다.
+
+```python
+# Run inline Python to prepare exec summary from WF outputs
+import json
+from pathlib import Path
+
+date = "{date}"
+output_path = Path("{INT_OUTPUT_ROOT}/analysis/integrated-exec-summary-{date}.json")
+output_path.parent.mkdir(parents=True, exist_ok=True)
+
+wf_data = {}
+for wf_key, data_root in [
+    ("wf1", "{WF1_DATA_ROOT}"),
+    ("wf2", "{WF2_DATA_ROOT}"),
+    ("wf3", "{WF3_DATA_ROOT}"),
+    ("wf4", "{WF4_DATA_ROOT}"),
+]:
+    classified_path = Path(f"{data_root}/structured/classified-signals-{date}.json")
+    ranked_path = Path(f"{data_root}/analysis/priority-ranked-{date}.json")
+    entry = {}
+    if classified_path.exists():
+        c = json.loads(classified_path.read_text())
+        entry["signal_count"] = len(c.get("signals", []))
+    if ranked_path.exists():
+        r = json.loads(ranked_path.read_text())
+        ranked = r.get("ranked_signals", [])
+        entry["top_count"] = r.get("ranking_metadata", {}).get("total_ranked", len(ranked))
+        psst_scores = [s.get("psst_score", 0) for s in ranked if s.get("psst_score")]
+        entry["avg_psst"] = round(sum(psst_scores) / len(psst_scores), 1) if psst_scores else 0
+    wf_data[wf_key] = entry
+
+output_path.write_text(json.dumps(wf_data, ensure_ascii=False, indent=2))
+print(f"Integrated exec summary written: {output_path}")
+```
+
+- **On failure**: Log warning, continue — `_empty_integrated_exec_summary()` provides N/A fallback.
+
 ### 5.1.3 Compute Integrated Evolution Statistics (Python — v2.3.0)
 
 > **Purpose**: 4개 WF의 evolution-map을 병합하여 EVOLUTION_* 통계 + INT_EVOLUTION_CROSS_TABLE을
-> 프로그래매틱으로 생성한다. 이 값들은 Step 5.1.5에서 스켈레톤에 주입된다.
+> 프로그래매틱으로 생성한다. Section 8 placeholders (WF1–WF4 signal totals, exec summary)도
+> 이 단계에서 주입된다. 값들은 Step 5.1.5에서 스켈레톤에 주입된다.
 
 ```yaml
 IF EVOLUTION_ENABLED == true:
@@ -762,12 +805,19 @@ python3 {TC_STATISTICS_SCRIPT} \
     {WF3_DATA_ROOT}/analysis/evolution/evolution-map-{date}.json \
     {WF4_DATA_ROOT}/analysis/evolution/evolution-map-{date}.json \
   --cross-evolution-map {INT_OUTPUT_ROOT}/analysis/evolution/cross-evolution-map-{date}.json \
+  --wf1-classified {WF1_DATA_ROOT}/structured/classified-signals-{date}.json \
+  --wf2-classified {WF2_DATA_ROOT}/structured/classified-signals-{date}.json \
+  --wf3-classified {WF3_DATA_ROOT}/structured/classified-signals-{date}.json \
+  --wf4-classified {WF4_DATA_ROOT}/structured/classified-signals-{date}.json \
+  --wf-exec-data {INT_OUTPUT_ROOT}/analysis/integrated-exec-summary-{date}.json \
   --language {BI_LANGUAGE} \
   --output {INT_OUTPUT_ROOT}/analysis/integrated-report-statistics-{date}.json
 ```
 
 - **On failure**: Log warning, proceed without statistics (evolution placeholders will be empty).
 - Missing individual evolution-maps are skipped gracefully (the statistics engine warns but continues).
+- Missing classified-signals files are skipped gracefully (WF*_TOTAL_SIGNALS shows "해당 없음").
+- Missing exec-summary defaults to N/A for all WF*_SIGNAL_COUNT etc. placeholders.
 
 ### 5.1.4 Generate Timeline Map (Python — v2.4.0)
 
@@ -854,7 +904,7 @@ agent_team:
   name: "integration-analysis-{date}"
   leader_mode: "delegation"       # Leader only coordinates, does not write files
   plan_approval: true             # Teammates must submit plans before implementing
-  teammate_model: "sonnet"        # Cost-efficient for analysis work
+  teammate_model: "opus"          # Cross-workflow analysis requires highest reasoning capability
 
   teammates:
     - name: "wf1-analyst"
@@ -1479,13 +1529,24 @@ python3 {TC_STATISTICS_SCRIPT} \
     {WF1_DATA_ROOT}/analysis/evolution/evolution-map-{day2}.json \
     ... \
     {WF1_DATA_ROOT}/analysis/evolution/evolution-map-{day7}.json \
+  --daily-stats-data \
+    {WF1_DATA_ROOT}/reports/report-statistics-{day1}.json \
+    {WF2_DATA_ROOT}/reports/report-statistics-{day1}.json \
+    {WF3_DATA_ROOT}/reports/report-statistics-{day1}.json \
+    {WF4_DATA_ROOT}/reports/report-statistics-{day1}.json \
+    {WF1_DATA_ROOT}/reports/report-statistics-{day2}.json \
+    ... \
+    {WF4_DATA_ROOT}/reports/report-statistics-{day7}.json \
   --language {BI_LANGUAGE} \
   --output {WEEKLY_OUTPUT_ROOT}/analysis/weekly-report-statistics-{week_id}.json
 ```
 
 - **On failure**: Log warning, proceed without statistics (weekly evolution placeholders will be empty).
-- Note: Collect evolution-map files from ALL 3 WFs for the last WEEKLY_LOOKBACK days.
+- Note: Collect evolution-map files from ALL 4 WFs for the last WEEKLY_LOOKBACK days.
   Glob pattern: `{WF*_DATA_ROOT}/analysis/evolution/evolution-map-*.json` filtered by date range.
+- Note: Collect report-statistics files from ALL 4 WFs for the last WEEKLY_LOOKBACK days.
+  Glob pattern: `{WF*_DATA_ROOT}/reports/report-statistics-*.json` filtered by date range.
+  Missing files are skipped gracefully (`TOTAL_SIGNALS_ANALYZED` etc. will aggregate only available data).
 
 ### 7.2.5 Pre-fill Weekly Skeleton (Python — 결정론적)
 

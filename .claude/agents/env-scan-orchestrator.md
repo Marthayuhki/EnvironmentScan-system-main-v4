@@ -348,7 +348,7 @@ pSST_Quality_Checks:
   step_2.2_impact:
     - psst_ic_range: "IC dimension in [0, 100]"
 
-  step_2.3_ranker:
+  step_2.3_priority_calculator:  # priority_score_calculator.py (Python)
     - psst_all_6_dimensions: "All 6 dimensions (SR, ES, CC, TC, DC, IC) present for each signal"
     - psst_score_range: "pSST composite score in [0, 100]"
     - psst_grade_consistency: "Grade matches thresholds (A≥90, B≥70, C≥50, D<50)"
@@ -2438,7 +2438,7 @@ Update `workflow-status.json` `verification_results` counters per standard pseud
 ```yaml
 step_id: "2.1"
 step_name: "Signal Classification"
-agent: "@signal-classifier"
+agent: "@phase2-analyst"
 additional_data:
   avg_confidence: {value}
   category_distribution: { S: n, T: n, E_econ: n, E_env: n, P: n, s: n }
@@ -2494,11 +2494,11 @@ Pre-Verification Checks:
 
 #### ② EXECUTE (기존 로직)
 
-**Invoke**: Task tool with `@impact-analyzer` worker agent
+**Invoke**: Task tool with `@phase2-analyst` worker agent
 
 ```yaml
-Agent: impact-analyzer
-Description: Analyze impacts and cross-influences
+Agent: phase2-analyst
+Description: Unified Phase 2 — Classification enrichment + Impact Analysis (Steps 2.1 + 2.2)
 Input files:
   - structured/classified-signals-{date}.json
   - context/shared-context-{date}.json
@@ -2506,11 +2506,12 @@ Output:
   - analysis/impact-assessment-{date}.json
   - analysis/cross-impact-matrix-{date}.json
   - analysis/scenario-probabilities-{date}.json
-  - context/shared-context-{date}.json (updated with impact scores)
+  - context/shared-context-{date}.json (updated with impact scores + pSST)
+  # NOTE: priority-ranked is NOT produced here — priority_score_calculator.py (Step 2.3) handles it
 Substeps:
   - SubStep 2.2.1: Identify direct and derived impacts
   - SubStep 2.2.2: Build cross-impact matrix (optimized, not full N×N)
-  - SubStep 2.2.3: Generate Bayesian network probabilities
+  # SubStep 2.2.3 (priority ranking) moved to Python Step 2.3 (원천봉쇄)
 ```
 
 #### ③ POST-VERIFY (3-Layer 사후 검증)
@@ -2550,8 +2551,8 @@ Layer_3_Quality:
 #### ④ RETRY (실패 시)
 
 Layer 1/2 failure:
-1. Re-invoke `@impact-analyzer` (attempt 2, delay 2s)
-2. If SubStep 2.2.3 (Bayesian) specifically fails: Skip and continue with WARN
+1. Re-invoke `@phase2-analyst` (attempt 2, delay 2s; re-reads classified-signals from file)
+2. If SubStep 2.2.3 (pSST aggregation) specifically fails: Skip and continue with WARN
 3. If core impact analysis fails after 2 retries: Log error E5000, HALT
 
 Layer 3 failure: Log warning, continue
@@ -2565,7 +2566,7 @@ Update `workflow-status.json` `verification_results` counters per standard pseud
 ```yaml
 step_id: "2.2"
 step_name: "Impact Analysis"
-agent: "@impact-analyzer"
+agent: "@phase2-analyst"
 additional_data:
   signals_analyzed: {count}
   cross_impacts_computed: {count}
@@ -2624,19 +2625,28 @@ Pre-Verification Checks:
     on_fail: HALT (impact analysis must be verified)
 ```
 
-#### ② EXECUTE (기존 로직)
+#### ② EXECUTE (Python 원천봉쇄)
 
-**Invoke**: Task tool with `@priority-ranker` worker agent
+**Worker**: `priority_score_calculator.py` — deterministic priority scoring (no LLM hallucination on formulas).
+Reads classified-signals + impact-assessment → computes weighted scores → writes priority-ranked.
+
+```bash
+python3 env-scanning/core/priority_score_calculator.py \
+  --classified {data_root}/structured/classified-signals-{date}.json \
+  --impact     {data_root}/analysis/impact-assessment-{date}.json \
+  --filtered   {data_root}/filtered/new-signals-{date}.json \
+  --thresholds env-scanning/config/thresholds.yaml \
+  --workflow   {workflow_name} \
+  --date       {date} \
+  --output     {data_root}/analysis/priority-ranked-{date}.json
+```
 
 ```yaml
-Agent: priority-ranker
-Description: Rank signals by weighted criteria
-Input files:
-  - analysis/impact-assessment-{date}.json
-  - context/shared-context-{date}.json
-Output:
-  - analysis/priority-ranked-{date}.json
-Criteria:
+Exit codes:
+  0: SUCCESS — all scores computed without fallback
+  2: WARN    — some signals used fallback values (warn_count > 0); continue but log
+  1: ERROR   — input file missing or invalid JSON; HALT and investigate
+Criteria applied (from thresholds.yaml, defaults if absent):
   - Impact: 40%
   - Probability: 30%
   - Urgency: 20%
@@ -2653,15 +2663,15 @@ Layer_1_Structural:
 Layer_2_Functional:
   - check: "All signals have priority_score field"
     on_fail: RETRY
-  - check: "All priority_score values in range [0, 10]"
+  - check: "All priority_score values in range [1, 5]"
     on_fail: RETRY
   - check: "Signals are sorted by priority_score descending"
     on_fail: RETRY (sorting is a core requirement)
   - check: "Signal count in ranked file == signal count in classified file"
     on_fail: RETRY (no signals should be lost during ranking)
-  - check: "Top 10 signals clearly identified (top_signals array or equivalent)"
-    on_fail: RETRY
-  - check: "Each signal has component scores: impact, probability, urgency, novelty"
+  - check: "ranking_metadata.engine == 'priority_score_calculator.py'"
+    on_fail: WARN (unexpected engine; manual priority scoring may have been used)
+  - check: "Each signal has component_scores: impact, probability, urgency, novelty"
     on_fail: RETRY
 
 Layer_3_Quality:
@@ -2675,7 +2685,10 @@ Layer_3_Quality:
 
 #### ④ RETRY (실패 시)
 
-Layer 1/2 failure: Re-invoke `@priority-ranker` (max 2 retries, exponential backoff)
+Layer 1/2 failure (exit code 1): Verify input files exist and are valid JSON. Re-run
+`priority_score_calculator.py` (max 2 retries, 2s delay). On exhaustion → HALT_and_ask_user
+(priority ranking is required for human review and report generation).
+Layer 2 warning (exit code 2): Log warn_count. Continue — Python fallbacks produce valid output.
 Layer 3 failure: Log warning, continue (quality issues noted for human review in Step 2.5)
 
 #### ⑤ RECORD (검증 결과 기록)
@@ -2687,14 +2700,15 @@ Update `workflow-status.json` `verification_results` counters per standard pseud
 ```yaml
 step_id: "2.3"
 step_name: "Priority Ranking"
-agent: "@priority-ranker"
+agent: "priority_score_calculator.py"
 additional_data:
-  signals_ranked: {count}
+  signals_ranked: {count from ranking_metadata.total_ranked}
+  warn_count: {count from ranking_metadata.warn_count}
   top_signal_score: {value}
   weight_distribution: { impact: 0.4, probability: 0.3, urgency: 0.2, novelty: 0.1 }
 ```
 
-**Retry (VEV)**: Layer 1/2 failure → max 2 retries. On exhaustion → HALT_and_ask_user (ranking is required for human review).
+**Retry (VEV)**: Layer 1 failure → max 2 retries. On exhaustion → HALT_and_ask_user.
 
 ---
 
@@ -3316,11 +3330,13 @@ python3 {statistics_engine_script} \
   --input {data_root}/structured/classified-signals-{date}.json \
   --workflow-type standard \
   --evolution-map {data_root}/analysis/evolution/evolution-map-{date}.json \
+  --priority-ranked {data_root}/analysis/priority-ranked-{date}.json \
   --language {bilingual_language} \
   --output {data_root}/reports/report-statistics-{date}.json
 ```
 
 > **v2.3.0**: `--evolution-map` 인자가 추가됨. 파일이 없으면(evolution disabled 또는 Step 3.1b 실패) statistics engine이 빈 evolution 플레이스홀더를 생성하여 graceful degradation.
+> **v2.4.0**: `--priority-ranked` 인자가 추가됨. `TOP_PRIORITY_COUNT` 플레이스홀더를 Python이 계산한다.
 
 **Step A: Temporal + Statistical Metadata Injection (Python — 결정론적)**
 
@@ -4031,9 +4047,7 @@ After workflow completion, generate:
     "archive-loader": {"time": 5, "status": "success"},
     "multi-source-scanner": {"time": 45, "status": "success"},
     "deduplication-filter": {"time": 10, "status": "success"},
-    "signal-classifier": {"time": 50, "status": "success"},
-    "impact-analyzer": {"time": 20, "status": "success"},
-    "priority-ranker": {"time": 5, "status": "success"},
+    "phase2-analyst": {"time": 75, "status": "success"},
     "database-updater": {"time": 3, "status": "success", "critical": true},
     "report-generator": {"time": 30, "status": "success"},
     "archive-notifier": {"time": 2, "status": "success"}
@@ -4670,9 +4684,7 @@ Throughout execution:
 - @archive-loader
 - @multi-source-scanner
 - @deduplication-filter
-- @signal-classifier
-- @impact-analyzer
-- @priority-ranker
+- @phase2-analyst
 - @database-updater
 - @report-generator
 - @archive-notifier

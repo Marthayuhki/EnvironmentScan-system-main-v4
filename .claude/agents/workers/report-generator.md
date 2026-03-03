@@ -40,6 +40,7 @@ The following placeholders are **pre-injected by Python** via `report_statistics
 `report_metadata_injector.py` (with `--language en` for English output). Do NOT recalculate these:
 
 - `{{TOTAL_NEW_SIGNALS}}` — total signal count
+- `{{TOP_PRIORITY_COUNT}}` — count of signals above priority threshold (from priority-ranked JSON)
 - `{{DOMAIN_DISTRIBUTION}}` — STEEPs distribution string
 - WF3: `{{FSSF_*_COUNT}}`, `{{FSSF_*_PCT}}` — FSSF 8-type counts/percentages
 - WF3: `{{H*_COUNT}}`, `{{H*_PCT}}` — Three Horizons counts/percentages
@@ -631,6 +632,62 @@ See the reference document above for the full transformation dictionary and qual
 
 > **Note**: In the English-first workflow, this style transformation is applied to the English report.
 > The translation sub-agent then translates the already-cleaned English output to Korean.
+
+---
+
+## Quality Pre-Check (L3 Reviewer Criteria — Write to Pass on First Try)
+
+Before generating each signal block, internalize the following criteria from `quality-reviewer.md`
+(Layer 3 Semantic Review). Writing to these standards eliminates fix→retry cycles.
+
+### Pass 1: Inference Depth
+
+The **Inference** field for every signal MUST satisfy all three:
+
+1. **Causal chain** — Explain *why* this signal matters.
+   - Include the cause → consequence chain.
+   - Not acceptable: "This is significant for the AI industry."
+   - Acceptable: "Samsung's HBM4 first-mover advantage forces SK Hynix to accelerate its
+     own HBM4 roadmap, which compresses margin windows for both companies while potentially
+     reducing NVIDIA's supply risk."
+
+2. **Scenario projection** — Project *what happens next*.
+   - Provide a concrete condition → outcome statement.
+   - Not acceptable: "This may affect future developments."
+   - Acceptable: "If tariff escalation reaches 35%, Korea's auto-export revenue declines
+     by an estimated 12% within 18 months, accelerating EV factory relocation to Mexico."
+
+3. **Systemic patterns** — Connect to macro trends, feedback loops, or paradigm dynamics.
+   - Link the signal to broader structural forces.
+   - Not acceptable: "This relates to the broader AI competition trend."
+   - Acceptable: "This reinforces the 'AI supercycle → memory premium → Korean fab advantage'
+     feedback loop, creating upward pressure on KOSPI semiconductor valuations."
+
+### Pass 2: Report Coherence
+
+Before finalizing the report, verify:
+
+1. **Narrative arc** — Sections 1 → 2 → 3 → 4 → 5 form a logical progression.
+   - Section 1 (Executive Summary) must preview themes developed in Sections 3–5.
+   - Section 4 (Patterns) must reference specific signals from Section 2.
+   - Section 5 (Implications) must flow naturally from patterns in Section 4.
+   - Not acceptable: Introducing a strategic theme in Section 5 that was never mentioned
+     in earlier sections.
+
+2. **Internal consistency** — Verify cross-section numerical accuracy.
+   - STEEPs distribution in Section 3 MUST match the actual signal classifications.
+   - Cross-impact pairs in Section 4 MUST use correct signal names from Section 2.
+   - Section 5 implications MUST connect to signals/patterns discussed earlier.
+
+### Pass 3: QC-007 Awareness
+
+Python check QC-007 flags signals where STEEPs classification keywords don't match content.
+To reduce false flags:
+- Ensure the signal's description and inference use keywords consistent with its STEEPs category.
+- For `s` (spiritual/ethics) signals: include terms like "ethics", "values", "psychology", or
+  "wellbeing" in the description — not just the title.
+- For `P` (Political) signals that include legal/regulatory content: include "regulation",
+  "policy", or "legislation" in the description.
 
 ---
 

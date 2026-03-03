@@ -61,7 +61,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("signal_evolution_tracker")
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 
 
 # ---------------------------------------------------------------------------
@@ -1036,8 +1036,9 @@ def cross_correlate_threads(
     registry_path: Optional[str] = None,
     title_threshold: Optional[float] = None,
     semantic_threshold: Optional[float] = None,
+    wf4_index_path: Optional[str] = None,
 ) -> dict:
-    """Cross-match threads across WF1/WF2/WF3 evolution indices.
+    """Cross-match threads across WF1/WF2/WF3/WF4 evolution indices.
 
     Only runs during integration step — preserves workflow independence.
     Detects academic→general pipeline and measures lead time.
@@ -1076,7 +1077,10 @@ def cross_correlate_threads(
         f"high_conf={_high_confidence_threshold}, cat_filter={_category_filter_enabled}"
     )
     indices = {}
-    for label, path in [("wf1", wf1_index_path), ("wf2", wf2_index_path), ("wf3", wf3_index_path)]:
+    wf_sources = [("wf1", wf1_index_path), ("wf2", wf2_index_path), ("wf3", wf3_index_path)]
+    if wf4_index_path:
+        wf_sources.append(("wf4", wf4_index_path))
+    for label, path in wf_sources:
         p = Path(path)
         if p.exists():
             with open(p, "r", encoding="utf-8") as f:
@@ -1085,7 +1089,10 @@ def cross_correlate_threads(
             indices[label] = {"threads": {}}
 
     correlations = []
+    # Preserve original pair ordering: WF2 as source (academic → general pipeline)
     wf_pairs = [("wf2", "wf1"), ("wf2", "wf3"), ("wf1", "wf3")]
+    if wf4_index_path:
+        wf_pairs.extend([("wf4", "wf1"), ("wf4", "wf2"), ("wf4", "wf3")])
 
     for src_wf, tgt_wf in wf_pairs:
         src_threads = indices.get(src_wf, {}).get("threads", {})
@@ -1189,6 +1196,7 @@ def main():
     cross_parser.add_argument("--wf1-index", required=True, help="WF1 evolution index JSON")
     cross_parser.add_argument("--wf2-index", required=True, help="WF2 evolution index JSON")
     cross_parser.add_argument("--wf3-index", required=True, help="WF3 evolution index JSON")
+    cross_parser.add_argument("--wf4-index", default=None, help="WF4 evolution index JSON (optional)")
     cross_parser.add_argument("--output", "-o", required=True, help="Output cross-evolution map JSON")
     # CLI threshold overrides — for testing only
     cross_parser.add_argument("--title-threshold", type=float, default=None,
@@ -1253,6 +1261,7 @@ def main():
                 registry_path=args.registry,
                 title_threshold=args.title_threshold,
                 semantic_threshold=args.semantic_threshold,
+                wf4_index_path=args.wf4_index,
             )
             print("=" * 60)
             print(f"  Cross-Workflow Evolution Correlation v{VERSION}")

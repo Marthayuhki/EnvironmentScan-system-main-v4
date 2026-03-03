@@ -1210,3 +1210,424 @@ class TestBilingualEnglish:
         assert "Economic(E)" in ph["DOMAIN_DISTRIBUTION"]
         assert "건" not in ph["DOMAIN_DISTRIBUTION"]
         assert ph["EVOLUTION_TABLE_STRENGTHENING"] == "N/A"
+
+
+# ---------------------------------------------------------------------------
+# TestComputeTopPriorityCount  (v1.4.0 — Task 1.1)
+# ---------------------------------------------------------------------------
+
+def _make_ranked_data(scores):
+    """Helper: build priority-ranked JSON with given priority_score list."""
+    return {
+        "ranked_signals": [
+            {"id": f"sig-{i}", "priority_score": score}
+            for i, score in enumerate(scores)
+        ]
+    }
+
+
+class TestComputeTopPriorityCount:
+    def test_basic_count_above_threshold(self):
+        data = _make_ranked_data([5.0, 4.5, 3.5, 3.0, 2.0])
+        result = engine.compute_top_priority_count(data, threshold=3.5)
+        assert result["TOP_PRIORITY_COUNT"] == "3"  # 5.0, 4.5, 3.5
+
+    def test_boundary_at_exact_threshold(self):
+        """Signals at exactly threshold should be counted."""
+        data = _make_ranked_data([3.5, 3.5])
+        result = engine.compute_top_priority_count(data, threshold=3.5)
+        assert result["TOP_PRIORITY_COUNT"] == "2"
+
+    def test_all_below_threshold(self):
+        data = _make_ranked_data([1.0, 2.0, 3.4])
+        result = engine.compute_top_priority_count(data, threshold=3.5)
+        assert result["TOP_PRIORITY_COUNT"] == "0"
+
+    def test_empty_ranked_signals(self):
+        result = engine.compute_top_priority_count({"ranked_signals": []}, threshold=3.5)
+        assert result["TOP_PRIORITY_COUNT"] == "0"
+
+    def test_missing_ranked_signals_key(self):
+        result = engine.compute_top_priority_count({}, threshold=3.5)
+        assert result["TOP_PRIORITY_COUNT"] == "0"
+
+    def test_custom_threshold(self):
+        data = _make_ranked_data([4.0, 3.0, 2.0])
+        result = engine.compute_top_priority_count(data, threshold=4.0)
+        assert result["TOP_PRIORITY_COUNT"] == "1"
+
+    def test_string_score_coercion(self):
+        """priority_score stored as string should be coerced to float."""
+        data = {"ranked_signals": [{"id": "s1", "priority_score": "4.2"},
+                                    {"id": "s2", "priority_score": "2.8"}]}
+        result = engine.compute_top_priority_count(data, threshold=3.5)
+        assert result["TOP_PRIORITY_COUNT"] == "1"
+
+    def test_returns_only_top_priority_count_key(self):
+        data = _make_ranked_data([5.0])
+        result = engine.compute_top_priority_count(data)
+        assert set(result.keys()) == {"TOP_PRIORITY_COUNT"}
+
+    def test_empty_placeholder_fallback(self):
+        result = engine._empty_top_priority_placeholders()
+        assert result["TOP_PRIORITY_COUNT"] == "0"
+
+
+# ---------------------------------------------------------------------------
+# TestComputeNaverCrawlStatistics  (v1.4.0 — Task 1.2)
+# ---------------------------------------------------------------------------
+
+def _make_naver_raw(items, scan_date="2026-03-02", timestamp=None, method=None):
+    """Helper: build WF3 raw scan JSON."""
+    exec_proof = {}
+    if timestamp:
+        exec_proof["timestamp"] = timestamp
+    if method:
+        exec_proof["method"] = method
+    return {
+        "scan_metadata": {
+            "scan_date": scan_date,
+            "execution_proof": exec_proof,
+        },
+        "items": items,
+    }
+
+
+def _make_naver_item(section):
+    """Helper: one Naver item with given section string."""
+    return {"source": {"section": section}}
+
+
+class TestComputeNaverCrawlStatistics:
+    def test_section_counts_numeric_code(self):
+        items = [_make_naver_item("105"), _make_naver_item("105"), _make_naver_item("101")]
+        raw = _make_naver_raw(items)
+        result = engine.compute_naver_crawl_statistics(raw)
+        assert result["SECTION_105_COUNT"] == "2"
+        assert result["SECTION_101_COUNT"] == "1"
+        assert result["SECTION_100_COUNT"] == "0"
+
+    def test_section_counts_descriptive_format(self):
+        """Handles 'IT/Science (105)' descriptive section strings."""
+        items = [_make_naver_item("IT/Science (105)"),
+                 _make_naver_item("Economy (101)"),
+                 _make_naver_item("Politics (100)")]
+        raw = _make_naver_raw(items)
+        result = engine.compute_naver_crawl_statistics(raw)
+        assert result["SECTION_105_COUNT"] == "1"
+        assert result["SECTION_101_COUNT"] == "1"
+        assert result["SECTION_100_COUNT"] == "1"
+
+    def test_total_articles(self):
+        items = [_make_naver_item("105")] * 7
+        raw = _make_naver_raw(items)
+        result = engine.compute_naver_crawl_statistics(raw)
+        assert result["TOTAL_ARTICLES"] == "7"
+
+    def test_crawl_datetime_from_execution_proof(self):
+        raw = _make_naver_raw([], timestamp="2026-03-02T10:00:00+09:00")
+        result = engine.compute_naver_crawl_statistics(raw)
+        assert result["CRAWL_DATETIME"] == "2026-03-02T10:00:00+09:00"
+
+    def test_crawl_datetime_fallback_to_scan_date(self):
+        """Falls back to scan_date when execution_proof.timestamp is absent."""
+        raw = _make_naver_raw([], scan_date="2026-03-02")
+        result = engine.compute_naver_crawl_statistics(raw)
+        assert result["CRAWL_DATETIME"] == "2026-03-02"
+
+    def test_crawl_strategy_from_method(self):
+        raw = _make_naver_raw([], method="web_search_proxy")
+        result = engine.compute_naver_crawl_statistics(raw)
+        assert result["CRAWL_STRATEGY_USED"] == "web_search_proxy"
+
+    def test_all_section_keys_present(self):
+        raw = _make_naver_raw([])
+        result = engine.compute_naver_crawl_statistics(raw)
+        for code in ["SECTION_100_COUNT", "SECTION_101_COUNT", "SECTION_102_COUNT",
+                     "SECTION_103_COUNT", "SECTION_104_COUNT", "SECTION_105_COUNT"]:
+            assert code in result
+
+    def test_sn_ratio_with_dedup_stats(self):
+        raw = _make_naver_raw([_make_naver_item("105")] * 10)
+        raw["dedup_stats"] = {"after_dedup": 8}
+        result = engine.compute_naver_crawl_statistics(raw)
+        assert result["SN_RATIO"] == "10:8"
+
+    def test_empty_placeholder_fallback(self):
+        result = engine._empty_naver_crawl_placeholders()
+        for key in ["SECTION_100_COUNT", "SECTION_101_COUNT", "SECTION_102_COUNT",
+                    "SECTION_103_COUNT", "SECTION_104_COUNT", "SECTION_105_COUNT",
+                    "TOTAL_ARTICLES"]:
+            assert result[key] == "0"
+        assert result["SN_RATIO"] == "N/A"
+
+
+# ---------------------------------------------------------------------------
+# TestComputeIntegratedWorkflowTotals  (v1.4.0 — Task 1.3)
+# ---------------------------------------------------------------------------
+
+def _make_classified_wf(count):
+    """Helper: classified-signals JSON with `count` signals."""
+    return {
+        "classified_signals": [{"id": f"s-{i}"} for i in range(count)]
+    }
+
+
+class TestComputeIntegratedWorkflowTotals:
+    def test_basic_totals(self):
+        wf = {
+            "wf1": _make_classified_wf(10),
+            "wf2": _make_classified_wf(5),
+            "wf3": _make_classified_wf(8),
+            "wf4": _make_classified_wf(3),
+        }
+        result = engine.compute_integrated_workflow_totals(wf)
+        assert result["WF1_TOTAL_SIGNALS"] == "10"
+        assert result["WF2_TOTAL_SIGNALS"] == "5"
+        assert result["WF3_TOTAL_SIGNALS"] == "8"
+        assert result["WF4_TOTAL_SIGNALS"] == "3"
+        assert result["TOTAL_COMBINED_SIGNALS"] == "26"
+
+    def test_missing_workflow_is_zero(self):
+        """Absent WF key → 0, not error."""
+        wf = {"wf1": _make_classified_wf(4)}
+        result = engine.compute_integrated_workflow_totals(wf)
+        assert result["WF1_TOTAL_SIGNALS"] == "4"
+        assert result["WF2_TOTAL_SIGNALS"] == "0"
+        assert result["WF3_TOTAL_SIGNALS"] == "0"
+        assert result["WF4_TOTAL_SIGNALS"] == "0"
+        assert result["TOTAL_COMBINED_SIGNALS"] == "4"
+
+    def test_none_workflow_is_zero(self):
+        """None value for a WF key → 0."""
+        wf = {"wf1": None, "wf2": _make_classified_wf(6), "wf3": None, "wf4": None}
+        result = engine.compute_integrated_workflow_totals(wf)
+        assert result["WF1_TOTAL_SIGNALS"] == "0"
+        assert result["WF2_TOTAL_SIGNALS"] == "6"
+        assert result["TOTAL_COMBINED_SIGNALS"] == "6"
+
+    def test_items_array_fallback(self):
+        """Supports raw signal format using `items` key."""
+        wf = {"wf1": {"items": [{"id": "a"}, {"id": "b"}]}}
+        result = engine.compute_integrated_workflow_totals(wf)
+        assert result["WF1_TOTAL_SIGNALS"] == "2"
+
+    def test_signals_array_fallback(self):
+        """Supports `signals` key as fallback."""
+        wf = {"wf3": {"signals": [{"id": "x"}, {"id": "y"}, {"id": "z"}]}}
+        result = engine.compute_integrated_workflow_totals(wf)
+        assert result["WF3_TOTAL_SIGNALS"] == "3"
+
+    def test_empty_placeholder_fallback(self):
+        result = engine._empty_integrated_totals()
+        for key in ["WF1_TOTAL_SIGNALS", "WF2_TOTAL_SIGNALS",
+                    "WF3_TOTAL_SIGNALS", "WF4_TOTAL_SIGNALS",
+                    "TOTAL_COMBINED_SIGNALS"]:
+            assert result[key] == "0"
+
+    def test_all_required_keys_present(self):
+        result = engine.compute_integrated_workflow_totals({})
+        expected_keys = {"WF1_TOTAL_SIGNALS", "WF2_TOTAL_SIGNALS",
+                         "WF3_TOTAL_SIGNALS", "WF4_TOTAL_SIGNALS",
+                         "TOTAL_COMBINED_SIGNALS"}
+        assert expected_keys.issubset(result.keys())
+
+
+# ---------------------------------------------------------------------------
+# TestComputeIntegratedExecutionSummary  (v1.4.0 — Task 1.4)
+# ---------------------------------------------------------------------------
+
+def _make_exec_entry(source_count=0, signal_count=0, dedup_count=0,
+                      top_count=0, avg_psst=0.0, duration_seconds=0):
+    return {
+        "source_count": source_count,
+        "signal_count": signal_count,
+        "dedup_count": dedup_count,
+        "top_count": top_count,
+        "avg_psst": avg_psst,
+        "duration_seconds": duration_seconds,
+    }
+
+
+class TestComputeIntegratedExecutionSummary:
+    def test_basic_per_wf_placeholders(self):
+        data = {
+            "wf1": _make_exec_entry(source_count=12, signal_count=30,
+                                    dedup_count=20, top_count=5,
+                                    avg_psst=72.5, duration_seconds=180),
+            "wf2": _make_exec_entry(signal_count=10),
+            "wf3": _make_exec_entry(signal_count=8),
+            "wf4": _make_exec_entry(signal_count=6),
+        }
+        result = engine.compute_integrated_execution_summary(data)
+        assert result["WF1_SIGNAL_COUNT"] == "30"
+        assert result["WF1_DEDUP_COUNT"] == "20"
+        assert result["WF1_TOP_COUNT"] == "5"
+        assert result["WF1_AVG_PSST"] == "72.5"
+        assert result["WF1_DURATION"] == "180s"
+
+    def test_total_aggregation(self):
+        data = {
+            "wf1": _make_exec_entry(signal_count=10, dedup_count=8),
+            "wf2": _make_exec_entry(signal_count=6, dedup_count=5),
+            "wf3": _make_exec_entry(signal_count=4, dedup_count=3),
+            "wf4": _make_exec_entry(signal_count=2, dedup_count=1),
+        }
+        result = engine.compute_integrated_execution_summary(data)
+        assert result["TOTAL_SIGNAL_COUNT"] == "22"
+        assert result["TOTAL_DEDUP_COUNT"] == "17"
+
+    def test_missing_wf_gives_na(self):
+        """Absent WF produces language-appropriate N/A for duration and source count."""
+        result_ko = engine.compute_integrated_execution_summary({}, language="ko")
+        assert result_ko["WF1_DURATION"] == "해당 없음"
+        assert result_ko["WF2_AVG_PSST"] == "해당 없음"
+        result_en = engine.compute_integrated_execution_summary({}, language="en")
+        assert result_en["WF1_DURATION"] == "N/A"
+        assert result_en["WF2_AVG_PSST"] == "N/A"
+
+    def test_avg_psst_formatted_to_one_decimal(self):
+        data = {"wf1": _make_exec_entry(avg_psst=63.14159)}
+        result = engine.compute_integrated_execution_summary(data)
+        assert result["WF1_AVG_PSST"] == "63.1"
+
+    def test_total_avg_psst_mean_of_wfs(self):
+        data = {
+            "wf1": _make_exec_entry(avg_psst=80.0),
+            "wf2": _make_exec_entry(avg_psst=60.0),
+            "wf3": _make_exec_entry(),  # avg_psst=0 → skipped
+            "wf4": _make_exec_entry(),
+        }
+        result = engine.compute_integrated_execution_summary(data)
+        # Mean of 80.0 and 60.0 only = 70.0
+        assert result["TOTAL_AVG_PSST"] == "70.0"
+
+    def test_all_required_per_wf_keys_present(self):
+        result = engine.compute_integrated_execution_summary({})
+        for label in ("WF1", "WF2", "WF3", "WF4"):
+            for suffix in ("SOURCE_COUNT", "SIGNAL_COUNT", "DEDUP_COUNT",
+                           "TOP_COUNT", "AVG_PSST", "DURATION"):
+                assert f"{label}_{suffix}" in result
+
+    def test_all_required_total_keys_present(self):
+        result = engine.compute_integrated_execution_summary({})
+        for key in ("TOTAL_SOURCE_COUNT", "TOTAL_SIGNAL_COUNT", "TOTAL_DEDUP_COUNT",
+                    "TOTAL_AVG_PSST", "TOTAL_DURATION"):
+            assert key in result
+
+    def test_empty_placeholder_fallback(self):
+        result_ko = engine._empty_integrated_exec_summary(language="ko")
+        assert result_ko["WF1_SIGNAL_COUNT"] == "해당 없음"
+        assert result_ko["TOTAL_DURATION"] == "해당 없음"
+        result_en = engine._empty_integrated_exec_summary(language="en")
+        assert result_en["WF1_SIGNAL_COUNT"] == "N/A"
+        assert result_en["TOTAL_DURATION"] == "N/A"
+
+
+# ---------------------------------------------------------------------------
+# TestComputeWeeklyAggregates  (v1.4.0 — Task 1.5)
+# ---------------------------------------------------------------------------
+
+def _make_daily_stats(workflow_type="standard", total_signals=10,
+                       strengthening=2, weakening=1, new_count=3,
+                       faded=0, active_threads=5):
+    return {
+        "workflow_type": workflow_type,
+        "total_signals": total_signals,
+        "placeholders": {
+            "EVOLUTION_STRENGTHENING_COUNT": str(strengthening),
+            "EVOLUTION_WEAKENING_COUNT": str(weakening),
+            "EVOLUTION_NEW_COUNT": str(new_count),
+            "EVOLUTION_FADED_COUNT": str(faded),
+            "EVOLUTION_ACTIVE_THREADS": str(active_threads),
+        },
+    }
+
+
+class TestComputeWeeklyAggregates:
+    def test_empty_list_returns_zeros(self):
+        result = engine.compute_weekly_aggregates([])
+        assert result["TOTAL_SIGNALS_ANALYZED"] == "0"
+        assert result["ACCELERATING_COUNT"] == "0"
+        assert result["CLUSTER_COUNT"] == "0"
+
+    def test_total_signals_analyzed(self):
+        stats = [_make_daily_stats(total_signals=10), _make_daily_stats(total_signals=15)]
+        result = engine.compute_weekly_aggregates(stats)
+        assert result["TOTAL_SIGNALS_ANALYZED"] == "25"
+
+    def test_accelerating_accumulates_across_days(self):
+        stats = [
+            _make_daily_stats(strengthening=3),
+            _make_daily_stats(strengthening=2),
+            _make_daily_stats(strengthening=4),
+        ]
+        result = engine.compute_weekly_aggregates(stats)
+        assert result["ACCELERATING_COUNT"] == "9"
+
+    def test_decelerating_accumulates(self):
+        stats = [_make_daily_stats(weakening=2), _make_daily_stats(weakening=3)]
+        result = engine.compute_weekly_aggregates(stats)
+        assert result["DECELERATING_COUNT"] == "5"
+
+    def test_new_emerged_accumulates(self):
+        stats = [_make_daily_stats(new_count=4), _make_daily_stats(new_count=6)]
+        result = engine.compute_weekly_aggregates(stats)
+        assert result["NEW_EMERGED_COUNT"] == "10"
+
+    def test_faded_accumulates(self):
+        stats = [_make_daily_stats(faded=1), _make_daily_stats(faded=3)]
+        result = engine.compute_weekly_aggregates(stats)
+        assert result["FADED_COUNT"] == "4"
+
+    def test_cluster_count_from_last_day_active_threads(self):
+        """CLUSTER_COUNT = EVOLUTION_ACTIVE_THREADS from most recent daily stats."""
+        stats = [
+            _make_daily_stats(active_threads=3),
+            _make_daily_stats(active_threads=7),  # last day
+        ]
+        result = engine.compute_weekly_aggregates(stats)
+        assert result["CLUSTER_COUNT"] == "7"
+
+    def test_top_trends_from_last_day_strengthening(self):
+        """TOP_TRENDS_COUNT = EVOLUTION_STRENGTHENING_COUNT from last day only."""
+        stats = [
+            _make_daily_stats(strengthening=5),
+            _make_daily_stats(strengthening=2),  # last day
+        ]
+        result = engine.compute_weekly_aggregates(stats)
+        assert result["TOP_TRENDS_COUNT"] == "2"
+
+    def test_wf_key_mapping(self):
+        """workflow_type strings map to correct WF buckets."""
+        stats = [
+            _make_daily_stats("standard", total_signals=10),
+            _make_daily_stats("arxiv", total_signals=5),
+            _make_daily_stats("naver", total_signals=8),
+            _make_daily_stats("multiglobal-news", total_signals=3),
+        ]
+        result = engine.compute_weekly_aggregates(stats)
+        assert result["WF1_TOTAL_SIGNALS"] == "10"
+        assert result["WF2_TOTAL_SIGNALS"] == "5"
+        assert result["WF3_TOTAL_SIGNALS"] == "8"
+        assert result["WF4_TOTAL_SIGNALS"] == "3"
+        assert result["TOTAL_SIGNALS_ANALYZED"] == "26"
+
+    def test_all_required_keys_present(self):
+        result = engine.compute_weekly_aggregates([_make_daily_stats()])
+        expected = {
+            "TOTAL_SIGNALS_ANALYZED",
+            "WF1_TOTAL_SIGNALS", "WF2_TOTAL_SIGNALS",
+            "WF3_TOTAL_SIGNALS", "WF4_TOTAL_SIGNALS",
+            "ACCELERATING_COUNT", "DECELERATING_COUNT",
+            "NEW_EMERGED_COUNT", "FADED_COUNT",
+            "CLUSTER_COUNT", "TOP_TRENDS_COUNT",
+        }
+        assert expected.issubset(result.keys())
+
+    def test_empty_placeholder_fallback(self):
+        result = engine._empty_weekly_aggregates()
+        for key in ["TOTAL_SIGNALS_ANALYZED", "ACCELERATING_COUNT",
+                    "DECELERATING_COUNT", "NEW_EMERGED_COUNT", "FADED_COUNT",
+                    "CLUSTER_COUNT", "TOP_TRENDS_COUNT"]:
+            assert result[key] == "0"

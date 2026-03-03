@@ -153,18 +153,22 @@ On_fail: trace_back and re_execute_failing_step (max 1 retry)
 
 ## Phase 2: Planning (Classification + Detection + Assessment)
 
-### Step 2.1: Signal Classification (Dual)
-- **Worker A**: signal-classifier (shared) → STEEPS 6-domain classification
-- **Worker B**: naver-signal-detector (WF3 exclusive) → FSSF 8-type + Three Horizons + Uncertainty
+### Step 2.1: Signal Classification, FSSF, Impact Analysis (Unified)
+- **Worker**: phase2-analyst (unified Steps 2.1 + 2.2 in single agent context)
 - **Input**: `{data_root}/filtered/new-signals-{date}.json`
-- **Output**: `{data_root}/structured/classified-signals-{date}.json`
+- **Outputs** (all produced in one agent invocation):
+  - `{data_root}/structured/classified-signals-{date}.json`
+  - `{data_root}/analysis/impact-assessment-{date}.json`
 - **FSSF Types**: Weak Signal, Emerging Issue, Trend, Megatrend, Driver, Wild Card, Discontinuity, Precursor Event
 - **Three Horizons**: H1 (0-2yr), H2 (2-7yr), H3 (7yr+)
 - **Uncertainty**: Low, Medium, High, Radical
-- **pSST**: Compute ES + CC dimensions
+- **pSST**: ES + CC + IC — all in single agent context
+- **Note**: STEEPs + FSSF + Three Horizons classification performed jointly in-context
+  (replaces separate signal-classifier + naver-signal-detector invocations)
+- **Note**: priority-ranked is NOT produced here — Python Step 2.3 handles it
 
-### Step 2.2: Impact Analysis (Extended)
-- **Worker A**: impact-analyzer (shared) → Cross-impact matrix
+### Step 2.2: Impact Analysis Output Verification (Extended)
+- **Worker**: (none — @phase2-analyst produced this in Step 2.1)
 - **Worker B**: naver-pattern-detector (WF3 exclusive) → Pattern Analysis + Tipping Point + Anomaly
 - **Input**: `{data_root}/structured/classified-signals-{date}.json`
 - **Output**: `{data_root}/analysis/impact-assessment-{date}.json`
@@ -177,13 +181,26 @@ On_fail: trace_back and re_execute_failing_step (max 1 retry)
   - Structural: cross-domain anomalies, single-source reporting
 - **pSST**: Compute IC dimension
 
-### Step 2.3: Priority Ranking
-- **Worker**: priority-ranker (shared)
-- **Input**: `{data_root}/analysis/impact-assessment-{date}.json`
+### Step 2.3: Priority Ranking (Python 원천봉쇄)
+- **Worker**: `priority_score_calculator.py` (Python — deterministic, no hallucination)
+- **Inputs**: classified-signals + impact-assessment + raw scan (for SR/TC metadata)
 - **Output**: `{data_root}/analysis/priority-ranked-{date}.json`
-- **Scoring**: Impact 40%, Probability 30%, Urgency 20%, Novelty 10%
-- **Additional**: Source Credibility Score, Actor identification, Urgency tags (URGENT/WATCH/ARCHIVE)
-- **pSST**: Final aggregation of all 6 dimensions
+- **Scoring**: Impact 40%, Probability 30%, Urgency 20%, Novelty 10% (from thresholds.yaml)
+- **pSST**: SR + TC + DC computed by Python; ES + CC + IC from LLM psst_dimensions fields
+
+```bash
+python3 env-scanning/core/priority_score_calculator.py \
+  --classified {data_root}/structured/classified-signals-{date}.json \
+  --impact     {data_root}/analysis/impact-assessment-{date}.json \
+  --filtered   {data_root}/filtered/new-signals-{date}.json \
+  --thresholds env-scanning/config/thresholds.yaml \
+  --workflow   {workflow_name} \
+  --date       {date} \
+  --output     {data_root}/analysis/priority-ranked-{date}.json
+```
+
+Exit code 0 = success; exit code 2 = warn (some fields used fallbacks); exit code 1 = error (halt).
+On error: verify classified-signals and impact-assessment exist and are valid JSON, then retry.
 
 ### Step 2.5: Human Checkpoint (REQUIRED)
 - **Command**: `/env-scan:review-analysis`
@@ -249,6 +266,8 @@ python3 {statistics_engine_script} \
   --input {data_root}/structured/classified-signals-{date}.json \
   --workflow-type naver \
   --evolution-map {data_root}/analysis/evolution/evolution-map-{date}.json \
+  --raw-crawl-data {data_root}/raw/scan-{date}.json \
+  --priority-ranked {data_root}/analysis/priority-ranked-{date}.json \
   --language {bilingual_language} \
   --output {data_root}/reports/report-statistics-{date}.json
 ```

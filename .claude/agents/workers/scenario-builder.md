@@ -12,9 +12,9 @@ Generate plausible scenarios by combining high-priority signals using QUEST meth
 ---
 
 ## Input
-- `analysis/priority-ranked-{date}.json` (from @priority-ranker)
-- `analysis/cross-impact-matrix-{date}.json` (from @impact-analyzer)
-- `analysis/scenario-probabilities-{date}.json` (from @impact-analyzer)
+- `analysis/priority-ranked-{date}.json` (from priority_score_calculator.py)
+- `analysis/cross-impact-matrix-{date}.json` (from @phase2-analyst)
+- `analysis/scenario-probabilities-{date}.json` (from @phase2-analyst)
 
 ## Output
 - `scenarios/scenarios-{date}.json`

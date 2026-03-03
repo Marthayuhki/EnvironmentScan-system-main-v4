@@ -509,7 +509,7 @@ response_settings:
 - `@deduplication-filter` (filtered signals)
 
 ### Outputs Used By
-- `@signal-classifier` (Step 2.1, uses validated signals if available)
+- `@phase2-analyst` (Step 2.1, uses validated signals if available)
 
 ---
 

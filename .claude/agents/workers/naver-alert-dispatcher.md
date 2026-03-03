@@ -22,7 +22,7 @@ agent_swarm:
   max_tokens: 4000
 
   dependencies:
-    blocked_by: ["priority-ranker"]
+    blocked_by: ["priority_score_calculator.py"]
     blocks: []  # Terminal agent — nothing depends on this
 ```
 

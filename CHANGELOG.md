@@ -1,107 +1,97 @@
-# Changelog - RLM Memory Optimization
+# Changelog
 
-## [1.0.1] - 2026-01-30 (Critical Fixes)
+> SOT system version: **2.5.0** (as of `workflow-registry.yaml`)
+> Entries organized by git commit date. SOT internal module versions noted in parentheses where applicable.
 
-### 🐛 버그 수정
+## 2026-03-01
 
-#### RecursiveArchiveLoader 날짜 필드 불일치 (Critical)
-- **문제:** `_filter_by_date()`가 'first_detected'/'date' 필드만 찾음
-- **실제:** 데이터는 'collected_at'/'scan_date' 필드 사용
-- **영향:** 모든 신호를 건너뛰어 0개 로드됨
-- **수정:** 6개 날짜 필드 모두 지원하도록 확장
-  ```python
-  signal_date_str = (
-      signal.get('first_detected') or      # Legacy
-      signal.get('date') or                 # Legacy
-      signal.get('collected_at') or         # ✅ New
-      signal.get('scan_date') or            # ✅ New
-      signal.get('added_to_db_at') or       # ✅ New
-      signal.get('source', {}).get('published_date')  # ✅ New
-  )
-  ```
-- **검증:** 181/181 신호 정상 로드 확인
-
-### ✨ 기능 추가
-
-#### Entities 필드 자동 추출
-- **파일:** `env-scanning/utils/entity_extractor.py` (신규)
-- **기능:** 제목/초록에서 명명된 엔티티 자동 추출
-  - Organizations: OpenAI, Microsoft, WHO, etc.
-  - Technologies: GPT, Quantum Computing, CRISPR, etc.
-  - Policy terms: Regulation, Framework, Bill, etc.
-  - 캐피탈라이즈된 구문 (고유명사)
-  - 약어 (3+ 글자)
-- **통합:**
-  - `base_scanner.py`: `create_standard_signal()`에 entities 매개변수 추가
-  - `arxiv_scanner.py`: EntityExtractor 사용하여 자동 추출
-- **효과:** Stage 4 deduplication (entity matching) 활성화
-
-### 📊 검증 결과
-
-#### 현재 데이터셋 (181 signals)
-- RecursiveArchiveLoader: 181/181 로드 (100%)
-- Filter ratio: 100% (모든 신호 오늘 수집)
-- SharedContextManager: 75x 메모리 절감 (0.2KB vs 15KB)
-- Entities 추출: 평균 9-10개/signal
-
-#### 예상 프로덕션 성능
-- 10,000 signals, 90일 아카이브
-- RecursiveArchiveLoader: 10-20x 메모리 절감
-- SharedContextManager: 4-8x 메모리 절감
-- 전체: 5-8x 메모리 절감
+### 4-Layer Quality Defense (L2b + L3)
+- Add `validate_report_quality.py` — L2b cross-reference QC (13 checks: QC-001~013)
+- Add `quality-reviewer.md` — L3 semantic depth review (3-pass LLM sub-agent)
+- Fix skeleton contamination in report generator
 
 ---
 
-## [1.0.0] - 2026-01-30 (Initial Release)
+## 2026-02-24
 
-### ✨ 주요 기능
+### WF4: Multi&Global-News Environmental Scanning (Quadruple Workflow)
+- Add WF4 orchestrator (`multiglobal-news-scan-orchestrator.md`) and 5 exclusive workers
+- Add `news_direct_crawler.py` — 43 direct news sites, 11 languages, 3-level retry architecture
+- Add `news_signal_processor.py` — FSSF/Three Horizons/Tipping Point adapted for multilingual news
+- Add `sources-multiglobal-news.yaml` — 17 KR + 20 EN + 7 other language sites
+- Add WF4 report skeleton pair (KO/EN)
+- SOT updated: WF4 definition, SOT-051~054 validation, 9 checkpoints
 
-#### Phase 1: SharedContextManager
-- Field-level selective loading
-- 8개 필드별 getter/setter
-- Lazy loading with caching
-- Dirty field tracking (partial updates)
-- Atomic writes (corruption prevention)
-- Backward compatible (get_full_context)
-
-#### Phase 2: RecursiveArchiveLoader
-- Time-based filtering (7-day default)
-- Index building (URL, title, entity)
-- Multiple date format support
-- Backward compatible (load_full_archive)
-
-### 📚 문서
-
-- Memory Optimization Guide (600+ lines)
-- Quick Reference Card (400+ lines)
-- Visual Summary (500+ lines)
-- Implementation Summary (800+ lines)
-- Implementation Reflection (검증 보고서)
-
-### ✅ 검증
-
-- Unit tests: ✅ 통과
-- Integration tests: ✅ 통과
-- Backward compatibility: ✅ 100% 유지
-- Performance: ⚠️  소규모만 검증 (대규모 필요)
+### Documentation
+- Update all root documentation for Quadruple Workflow System
 
 ---
 
-## 향후 계획
+## 2026-02-06
 
-### 단기 (1-2주)
-- [ ] 10,000+ 신호 테스트 데이터 생성
-- [ ] 메모리 프로파일링 스크립트
-- [ ] 성능 벤치마크 실행
-- [ ] 대규모 환경 검증
+### WF3: Naver News Environmental Scanning (Triple Workflow)
+- Add WF3 orchestrator (`naver-scan-orchestrator.md`) and 4 exclusive workers
+- Add `naver_crawler.py` — CrawlDefender 7-strategy anti-blocking cascade
+- Add `naver_signal_processor.py` — FSSF 8-type classification, Three Horizons, Tipping Point detection
+- Add `sources-naver.yaml` — 6 Naver News sections with STEEPs mapping
+- Add WF3 report skeleton pair (KO/EN)
 
-### 장기 (1-2개월)
-- [ ] Phase 3: 교차영향 분석 압축
-- [ ] Phase 4: 임베딩 중복제거
-- [ ] 추가 메모리 최적화
+### Standard Signal Format
+- Add standard signal processor for WF3 with `items[]` array format
+
+### Weekly Meta-Analysis
+- Add weekly report skeleton and meta-analysis workflow
+- 7-day signal evolution analysis across all workflows
 
 ---
 
-**버전:** 1.0.1
-**날짜:** 2026-01-30
-**상태:** 프로덕션 준비 (대규모 검증 필요)
+## 2026-02-04
+
+### Initial Release (Dual Workflow System)
+
+All foundational modules committed as a single consolidated release.
+
+#### Core Infrastructure
+- SharedContextManager with field-level selective loading
+- RecursiveArchiveLoader with time-based filtering and index building
+- `entity_extractor.py` for automatic named entity extraction
+- Unit tests and integration tests
+
+#### WF2: arXiv Academic Deep Scanning
+- Add WF2 orchestrator (`arxiv-scan-orchestrator.md`)
+- arXiv extracted from WF1 into independent WF2
+- 14-day lookback, 50 results per category, 30+ arXiv categories
+
+#### Bilingual Pipeline (SOT internal: v2.8.0)
+- Add `bilingual_resolver.py`, `skeleton_mirror.py`, `translation_validator.py`
+- Reports generated in EN → validated → translated to KO
+- EN skeleton auto-generated from KO skeleton via deterministic transformation
+- `translation-terms.yaml` for STEEPs term preservation
+
+#### Temporal Consistency (SOT internal: v2.2.0)
+- Add `temporal_anchor.py` — deterministic T₀ generation and scan window arithmetic
+- Add `temporal_gate.py` — programmatic post-collection time range enforcement
+- Add `report_metadata_injector.py` — temporal metadata injection into reports
+- Add `report_statistics_engine.py` — deterministic placeholder computation
+- "계산은 Python이, 판단은 LLM이" principle established
+
+#### Signal Evolution Tracking (SOT internal: v2.3.0)
+- Add `signal_evolution_tracker.py` — cross-day signal matching (NEW/RECURRING/STRENGTHENING/WEAKENING/FADED/TRANSFORMED)
+- Jaro-Winkler title matching + keyword vector similarity
+- Evolution index as persistent file separate from database.json
+- Cross-workflow thread correlation for integration step
+- SOT direct reading (v2.3.1): all thresholds read from registry by Python
+
+#### Signal Evolution Timeline Map (SOT internal: v2.4.0)
+- Add `timeline_map_generator.py` — 7-day Korean markdown timeline map
+- Cross-WF correlation visualization in integrated reports
+
+#### Source Exploration (SOT internal: v2.5.0)
+- Add `source_explorer.py`, `exploration_gate.py`, `exploration_merge_gate.py`, `frontier_selector.py`
+- Gap-directed (alpha) and random serendipitous (beta) discovery agents
+- Independent evaluator agent for candidate scoring
+
+#### Dedup Gate (SOT internal: v2.6.0–v2.9.0)
+- Add `dedup_gate.py` — 4-stage cascade: URL → Topic Fingerprint → Jaro-Winkler → Entity Jaccard
+- Deterministic Python pre-filter before LLM dedup-filter agent
+- Cross-scan duplicate detection with 30-day lookback

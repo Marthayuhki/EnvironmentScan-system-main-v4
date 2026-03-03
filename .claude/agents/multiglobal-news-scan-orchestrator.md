@@ -263,20 +263,24 @@ On_fail: trace_back and re_execute_failing_step (max 1 retry)
 
 ~18 tasks total
 
-### Step 2.1: Signal Classification (Dual)
-- **Worker A**: signal-classifier (shared) -> STEEPS 6-domain classification
-- **Worker B**: news-signal-detector (WF4 exclusive) -> FSSF 8-type + Three Horizons + Uncertainty
+### Step 2.1: Signal Classification, FSSF, Impact Analysis (Unified)
+- **Worker**: phase2-analyst (unified Steps 2.1 + 2.2 in single agent context)
 - **Input**: `{data_root}/filtered/new-signals-{date}.json`
-- **Output**: `{data_root}/structured/classified-signals-{date}.json`
+- **Outputs** (all produced in one agent invocation):
+  - `{data_root}/structured/classified-signals-{date}.json`
+  - `{data_root}/analysis/impact-assessment-{date}.json`
 - **FSSF Types**: Weak Signal, Emerging Issue, Trend, Megatrend, Driver, Wild Card, Discontinuity, Precursor Event
 - **Three Horizons**: H1 (0-2yr), H2 (2-7yr), H3 (7yr+)
 - **Uncertainty**: Low, Medium, High, Radical
-- **pSST**: Compute ES + CC dimensions
-- **Note**: Classification operates on English-translated abstracts for consistency
+- **pSST**: ES + CC + IC — all in single agent context
+- **Note**: Classification operates on English-translated abstracts for consistency.
+  STEEPs + FSSF + Three Horizons classification performed jointly in-context
+  (replaces separate signal-classifier + news-signal-detector invocations)
+- **Note**: priority-ranked is NOT produced here — Python Step 2.3 handles it
 
 #### VEV Protocol (Full)
 1. **PRE-VERIFY**: Filtered signals file exists, item count > 0, all items have English abstracts
-2. **EXECUTE**: Run signal-classifier (STEEPs) and news-signal-detector (FSSF+H3) in parallel, merge results
+2. **EXECUTE**: Run @phase2-analyst (performs STEEPs + FSSF + Three Horizons + Impact Analysis in single context)
 3. **POST-VERIFY**: (L1) Output file exists, (L2) every signal has steeps_category + fssf_type + three_horizons + uncertainty_level, (L3) at least 2 different FSSF types and 2 different horizons represented
 4. **RETRY**: On classification failure, retry with more context. On persistent failure, assign defaults (Emerging Issue, H2, Medium).
 5. **RECORD**: Log steeps_distribution, fssf_distribution, horizon_distribution
@@ -295,8 +299,8 @@ On_fail: trace_back and re_execute_failing_step (max 1 retry)
 
 ---
 
-### Step 2.2: Impact Analysis (Extended)
-- **Worker A**: impact-analyzer (shared) -> Cross-impact matrix
+### Step 2.2: Impact Analysis Output Verification (Extended)
+- **Worker**: (none — @phase2-analyst produced impact-assessment in Step 2.1)
 - **Worker B**: news-pattern-detector (WF4 exclusive) -> Pattern Analysis + Tipping Point + Anomaly
 - **Input**: `{data_root}/structured/classified-signals-{date}.json`
 - **Output**: `{data_root}/analysis/impact-assessment-{date}.json`
@@ -311,7 +315,7 @@ On_fail: trace_back and re_execute_failing_step (max 1 retry)
 
 #### VEV Protocol (Full)
 1. **PRE-VERIFY**: Classified signals file exists, all items have FSSF + STEEPs fields
-2. **EXECUTE**: Run impact-analyzer and news-pattern-detector, merge results
+2. **EXECUTE**: Run news-pattern-detector (Tipping Point + Anomaly), merge with impact-assessment produced by @phase2-analyst
 3. **POST-VERIFY**: (L1) Output file exists, (L2) every signal has impact_score in [-5, +5], (L3) tipping point alert levels computed
 4. **RETRY**: On analysis failure, retry with simplified analysis. On persistent failure, use default impact scores.
 5. **RECORD**: Log impact_distribution, tipping_point_summary, anomaly_count
@@ -330,20 +334,30 @@ On_fail: trace_back and re_execute_failing_step (max 1 retry)
 
 ---
 
-### Step 2.3: Priority Ranking
-- **Worker**: priority-ranker (shared)
-- **Input**: `{data_root}/analysis/impact-assessment-{date}.json`
+### Step 2.3: Priority Ranking (Python 원천봉쇄)
+- **Worker**: `priority_score_calculator.py` (Python — deterministic, no hallucination)
+- **Inputs**: classified-signals + impact-assessment + filtered new-signals (for SR/TC metadata)
 - **Output**: `{data_root}/analysis/priority-ranked-{date}.json`
-- **Scoring**: Impact 40%, Probability 30%, Urgency 20%, Novelty 10%
-- **Additional**: Source Credibility Score, Actor identification, Urgency tags (URGENT/WATCH/ARCHIVE)
-- **pSST**: Final aggregation of all 6 dimensions
+- **Scoring**: Impact 40%, Probability 30%, Urgency 20%, Novelty 10% (from thresholds.yaml)
+- **pSST**: SR + TC + DC computed by Python; ES + CC + IC from LLM psst_dimensions fields
+
+```bash
+python3 env-scanning/core/priority_score_calculator.py \
+  --classified {data_root}/structured/classified-signals-{date}.json \
+  --impact     {data_root}/analysis/impact-assessment-{date}.json \
+  --filtered   {data_root}/filtered/new-signals-{date}.json \
+  --thresholds env-scanning/config/thresholds.yaml \
+  --workflow   {workflow_name} \
+  --date       {date} \
+  --output     {data_root}/analysis/priority-ranked-{date}.json
+```
 
 #### VEV Protocol (Full)
-1. **PRE-VERIFY**: Impact assessment file exists, all items have impact_score
-2. **EXECUTE**: Compute weighted priority scores, sort, assign urgency tags
-3. **POST-VERIFY**: (L1) Output file exists, (L2) priority_score in [0, 10] for all signals, (L3) signals sorted in descending priority order
-4. **RETRY**: On ranking failure, retry once. On persistent failure, sort by raw impact_score.
-5. **RECORD**: Log top_5_signals, score_distribution, urgency_tag_counts
+1. **PRE-VERIFY**: classified-signals and impact-assessment both exist with at least 1 signal
+2. **EXECUTE**: Run `priority_score_calculator.py` (exit 0=success, exit 2=warn/fallbacks, exit 1=error)
+3. **POST-VERIFY**: (L1) Output file exists and is valid JSON, (L2) all signals have priority_score in [1, 5], (L3) signals sorted in descending priority_score order
+4. **RETRY**: On exit code 1: verify input files are valid JSON, check file paths, retry. On persistent failure, HALT.
+5. **RECORD**: Log total_ranked, warn_count, top_signal_id and score
 
 ---
 
@@ -452,6 +466,7 @@ python3 {statistics_engine_script} \
   --workflow-type multiglobal-news \
   --evolution-map {data_root}/analysis/evolution/evolution-map-{date}.json \
   --raw-crawl-data {data_root}/raw/daily-crawl-{date}.json \
+  --priority-ranked {data_root}/analysis/priority-ranked-{date}.json \
   --language {bilingual_language} \
   --output {data_root}/reports/report-statistics-{date}.json
 ```

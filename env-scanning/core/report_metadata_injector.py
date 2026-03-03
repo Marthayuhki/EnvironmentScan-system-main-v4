@@ -66,7 +66,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Constants
 # ---------------------------------------------------------------------------
 
-VERSION = "1.2.0"
+VERSION = "1.3.0"
 INJECTOR_ID = "report_metadata_injector.py"
 
 # All temporal placeholders this injector handles
@@ -151,11 +151,54 @@ CRAWL_TRANSLATION_PLACEHOLDERS = {
     "TRANSLATION_STATS_TABLE",
 }
 
+# Top-priority count (universal — all 4 WF skeletons; v1.3.0)
+TOP_PRIORITY_PLACEHOLDERS = {
+    "TOP_PRIORITY_COUNT",
+}
+
+# WF3 Naver section counts and crawl metadata (v1.3.0)
+# Note: CRAWL_DATETIME, TOTAL_ARTICLES, SN_RATIO already in CRAWL_TRANSLATION_PLACEHOLDERS
+NAVER_CRAWL_PLACEHOLDERS = {
+    "SECTION_100_COUNT", "SECTION_101_COUNT", "SECTION_102_COUNT",
+    "SECTION_103_COUNT", "SECTION_104_COUNT", "SECTION_105_COUNT",
+    "CRAWL_STRATEGY_USED",
+}
+
+# Integrated report workflow totals (Section 1; v1.3.0)
+INTEGRATED_TOTALS_PLACEHOLDERS = {
+    "WF1_TOTAL_SIGNALS", "WF2_TOTAL_SIGNALS",
+    "WF3_TOTAL_SIGNALS", "WF4_TOTAL_SIGNALS",
+    "TOTAL_COMBINED_SIGNALS",
+}
+
+# Integrated report execution summary (Section 8.4; v1.3.0)
+INTEGRATED_EXEC_PLACEHOLDERS = {
+    "WF1_SOURCE_COUNT", "WF2_SOURCE_COUNT", "WF3_SOURCE_COUNT", "WF4_SOURCE_COUNT",
+    "WF1_SIGNAL_COUNT", "WF2_SIGNAL_COUNT", "WF3_SIGNAL_COUNT", "WF4_SIGNAL_COUNT",
+    "WF1_DEDUP_COUNT", "WF2_DEDUP_COUNT", "WF3_DEDUP_COUNT", "WF4_DEDUP_COUNT",
+    "WF1_TOP_COUNT", "WF2_TOP_COUNT", "WF3_TOP_COUNT", "WF4_TOP_COUNT",
+    "WF1_AVG_PSST", "WF2_AVG_PSST", "WF3_AVG_PSST", "WF4_AVG_PSST",
+    "WF1_DURATION", "WF2_DURATION", "WF3_DURATION", "WF4_DURATION",
+    "TOTAL_SOURCE_COUNT", "TOTAL_SIGNAL_COUNT", "TOTAL_DEDUP_COUNT",
+    "TOTAL_AVG_PSST", "TOTAL_DURATION",
+}
+
+# Weekly aggregated counts (v1.3.0)
+WEEKLY_AGGREGATE_PLACEHOLDERS = {
+    "TOTAL_SIGNALS_ANALYZED",
+    "ACCELERATING_COUNT", "DECELERATING_COUNT",
+    "NEW_EMERGED_COUNT", "FADED_COUNT",
+    "CLUSTER_COUNT", "TOP_TRENDS_COUNT",
+}
+
 # All deterministic placeholders this injector can handle
 ALL_DETERMINISTIC_PLACEHOLDERS = (
     TEMPORAL_PLACEHOLDERS | STATISTICAL_PLACEHOLDERS
     | EVOLUTION_PLACEHOLDERS | WEEKLY_EVOLUTION_PLACEHOLDERS
     | EXPLORATION_PLACEHOLDERS | CRAWL_TRANSLATION_PLACEHOLDERS
+    | TOP_PRIORITY_PLACEHOLDERS | NAVER_CRAWL_PLACEHOLDERS
+    | INTEGRATED_TOTALS_PLACEHOLDERS | INTEGRATED_EXEC_PLACEHOLDERS
+    | WEEKLY_AGGREGATE_PLACEHOLDERS
 )
 
 
@@ -306,7 +349,18 @@ def inject_temporal_metadata(
     evolution_found = all_placeholders & EVOLUTION_PLACEHOLDERS
     exploration_found = all_placeholders & EXPLORATION_PLACEHOLDERS
     crawl_translation_found = all_placeholders & CRAWL_TRANSLATION_PLACEHOLDERS
-    deterministic_found = temporal_found | statistical_found | evolution_found | exploration_found | crawl_translation_found
+    top_priority_found = all_placeholders & TOP_PRIORITY_PLACEHOLDERS
+    naver_crawl_found = all_placeholders & NAVER_CRAWL_PLACEHOLDERS
+    integrated_totals_found = all_placeholders & INTEGRATED_TOTALS_PLACEHOLDERS
+    integrated_exec_found = all_placeholders & INTEGRATED_EXEC_PLACEHOLDERS
+    weekly_aggregate_found = all_placeholders & WEEKLY_AGGREGATE_PLACEHOLDERS
+    deterministic_found = (
+        temporal_found | statistical_found | evolution_found
+        | exploration_found | crawl_translation_found
+        | top_priority_found | naver_crawl_found
+        | integrated_totals_found | integrated_exec_found
+        | weekly_aggregate_found
+    )
     non_deterministic = all_placeholders - ALL_DETERMINISTIC_PLACEHOLDERS
 
     # 6. Replace deterministic placeholders (temporal + statistical)
@@ -349,6 +403,21 @@ def inject_temporal_metadata(
         "exploration_placeholders_found": len(exploration_found),
         "exploration_placeholders_replaced": len([p for p in replaced if p in EXPLORATION_PLACEHOLDERS]),
         "exploration_placeholders_unresolved": [p for p in unresolved if p in EXPLORATION_PLACEHOLDERS],
+        "top_priority_placeholders_found": len(top_priority_found),
+        "top_priority_placeholders_replaced": len([p for p in replaced if p in TOP_PRIORITY_PLACEHOLDERS]),
+        "top_priority_placeholders_unresolved": [p for p in unresolved if p in TOP_PRIORITY_PLACEHOLDERS],
+        "naver_crawl_placeholders_found": len(naver_crawl_found),
+        "naver_crawl_placeholders_replaced": len([p for p in replaced if p in NAVER_CRAWL_PLACEHOLDERS]),
+        "naver_crawl_placeholders_unresolved": [p for p in unresolved if p in NAVER_CRAWL_PLACEHOLDERS],
+        "integrated_totals_placeholders_found": len(integrated_totals_found),
+        "integrated_totals_placeholders_replaced": len([p for p in replaced if p in INTEGRATED_TOTALS_PLACEHOLDERS]),
+        "integrated_totals_placeholders_unresolved": [p for p in unresolved if p in INTEGRATED_TOTALS_PLACEHOLDERS],
+        "integrated_exec_placeholders_found": len(integrated_exec_found),
+        "integrated_exec_placeholders_replaced": len([p for p in replaced if p in INTEGRATED_EXEC_PLACEHOLDERS]),
+        "integrated_exec_placeholders_unresolved": [p for p in unresolved if p in INTEGRATED_EXEC_PLACEHOLDERS],
+        "weekly_aggregate_placeholders_found": len(weekly_aggregate_found),
+        "weekly_aggregate_placeholders_replaced": len([p for p in replaced if p in WEEKLY_AGGREGATE_PLACEHOLDERS]),
+        "weekly_aggregate_placeholders_unresolved": [p for p in unresolved if p in WEEKLY_AGGREGATE_PLACEHOLDERS],
         "non_deterministic_placeholders_preserved": len(non_deterministic),
         "replaced": sorted(replaced),
         "status": "SUCCESS" if not unresolved else "PARTIAL",
@@ -437,8 +506,29 @@ def main():
             exp_replaced = report.get('exploration_placeholders_replaced', 0)
             if exp_found > 0:
                 print(f"  Exploration placeholders replaced: {exp_replaced}/{exp_found}")
+            for group_key, label in [
+                ("top_priority", "Top-priority"),
+                ("naver_crawl", "Naver crawl"),
+                ("integrated_totals", "Integrated totals"),
+                ("integrated_exec", "Integrated exec"),
+                ("weekly_aggregate", "Weekly aggregate"),
+            ]:
+                g_found = report.get(f"{group_key}_placeholders_found", 0)
+                g_replaced = report.get(f"{group_key}_placeholders_replaced", 0)
+                if g_found > 0:
+                    print(f"  {label} placeholders replaced: {g_replaced}/{g_found}")
             print(f"  Non-deterministic preserved for LLM: {report.get('non_deterministic_placeholders_preserved', report.get('non_temporal_placeholders_preserved', 0))}")
-            all_unresolved = report.get("temporal_placeholders_unresolved", []) + report.get("statistical_placeholders_unresolved", []) + report.get("evolution_placeholders_unresolved", []) + report.get("exploration_placeholders_unresolved", [])
+            all_unresolved = (
+                report.get("temporal_placeholders_unresolved", [])
+                + report.get("statistical_placeholders_unresolved", [])
+                + report.get("evolution_placeholders_unresolved", [])
+                + report.get("exploration_placeholders_unresolved", [])
+                + report.get("top_priority_placeholders_unresolved", [])
+                + report.get("naver_crawl_placeholders_unresolved", [])
+                + report.get("integrated_totals_placeholders_unresolved", [])
+                + report.get("integrated_exec_placeholders_unresolved", [])
+                + report.get("weekly_aggregate_placeholders_unresolved", [])
+            )
             if all_unresolved:
                 print(f"  ⚠️ Unresolved: {all_unresolved}")
             if report["replaced"]:

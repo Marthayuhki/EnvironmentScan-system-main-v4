@@ -1371,6 +1371,111 @@ class TestCrossCorrelateANDLogic:
 
 
 # ===========================================================================
+# v1.4.0 Tests: WF4 Cross-Correlation Support
+# ===========================================================================
+
+class TestCrossCorrelateWF4:
+    """WF4 inclusion in cross_correlate_threads (P0 fix)."""
+
+    def test_wf4_index_included_in_correlation(self, tmp_path):
+        """WF4 threads should be correlated with WF1/WF2/WF3."""
+        wf1_idx = _make_evolution_index(threads={
+            "T-WF1-001": _make_thread(
+                title="Global Supply Chain Disruption",
+                keywords=["supply", "chain", "disruption", "global"],
+                category="E",
+            ),
+        })
+        wf2_idx = _make_evolution_index(threads={})
+        wf3_idx = _make_evolution_index(threads={})
+        wf4_idx = _make_evolution_index(threads={
+            "T-WF4-001": _make_thread(
+                title="Global Supply Chain Disruption Deepens",
+                keywords=["supply", "chain", "disruption", "global", "trade"],
+                category="E",
+            ),
+        })
+
+        wf1_path = tmp_path / "wf1-index.json"
+        wf2_path = tmp_path / "wf2-index.json"
+        wf3_path = tmp_path / "wf3-index.json"
+        wf4_path = tmp_path / "wf4-index.json"
+        out_path = tmp_path / "cross-map.json"
+
+        wf1_path.write_text(json.dumps(wf1_idx), encoding="utf-8")
+        wf2_path.write_text(json.dumps(wf2_idx), encoding="utf-8")
+        wf3_path.write_text(json.dumps(wf3_idx), encoding="utf-8")
+        wf4_path.write_text(json.dumps(wf4_idx), encoding="utf-8")
+
+        result = tracker.cross_correlate_threads(
+            str(wf1_path), str(wf2_path), str(wf3_path), str(out_path),
+            title_threshold=0.75, semantic_threshold=0.50,
+            wf4_index_path=str(wf4_path),
+        )
+
+        # WF1↔WF4 should correlate (same topic, same category)
+        wf4_directions = [c["direction"] for c in result["correlations"]
+                          if "wf4" in c["direction"]]
+        assert len(wf4_directions) >= 1, \
+            "WF4 thread should correlate with WF1 thread"
+
+    def test_wf4_none_backward_compatible(self, tmp_path):
+        """When wf4_index_path is None, behavior is identical to pre-WF4."""
+        wf1_idx = _make_evolution_index(threads={
+            "T-001": _make_thread(title="AI Investment"),
+        })
+        wf2_idx = _make_evolution_index(threads={
+            "T-001": _make_thread(title="AI Investment Growth"),
+        })
+        wf3_idx = _make_evolution_index(threads={})
+
+        wf1_path = tmp_path / "wf1-index.json"
+        wf2_path = tmp_path / "wf2-index.json"
+        wf3_path = tmp_path / "wf3-index.json"
+        out_path = tmp_path / "cross-map.json"
+
+        wf1_path.write_text(json.dumps(wf1_idx), encoding="utf-8")
+        wf2_path.write_text(json.dumps(wf2_idx), encoding="utf-8")
+        wf3_path.write_text(json.dumps(wf3_idx), encoding="utf-8")
+
+        # No wf4_index_path — backward compatible call
+        result = tracker.cross_correlate_threads(
+            str(wf1_path), str(wf2_path), str(wf3_path), str(out_path),
+        )
+
+        # Should still work as before — no wf4 in any direction
+        for corr in result["correlations"]:
+            assert "wf4" not in corr["direction"], \
+                "Without WF4 index, no wf4 correlations should appear"
+
+    def test_wf4_missing_file_graceful(self, tmp_path):
+        """Non-existent WF4 index path should load as empty (no crash)."""
+        wf1_idx = _make_evolution_index(threads={
+            "T-001": _make_thread(title="AI Policy"),
+        })
+        wf2_idx = _make_evolution_index(threads={})
+        wf3_idx = _make_evolution_index(threads={})
+
+        wf1_path = tmp_path / "wf1-index.json"
+        wf2_path = tmp_path / "wf2-index.json"
+        wf3_path = tmp_path / "wf3-index.json"
+        out_path = tmp_path / "cross-map.json"
+
+        wf1_path.write_text(json.dumps(wf1_idx), encoding="utf-8")
+        wf2_path.write_text(json.dumps(wf2_idx), encoding="utf-8")
+        wf3_path.write_text(json.dumps(wf3_idx), encoding="utf-8")
+
+        # Point to non-existent file
+        result = tracker.cross_correlate_threads(
+            str(wf1_path), str(wf2_path), str(wf3_path), str(out_path),
+            wf4_index_path=str(tmp_path / "nonexistent-wf4.json"),
+        )
+
+        # Should not crash, wf4 loaded as empty
+        assert "total_correlations" in result
+
+
+# ===========================================================================
 # v1.3.0 Tests: L3 — pSST Backfill from Priority-Ranked
 # ===========================================================================
 

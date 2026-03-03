@@ -901,7 +901,7 @@ log_examples = {
 - `@archive-loader` (previous signals)
 
 ### Outputs Used By
-- `@signal-classifier` (Step 2.1)
+- `@phase2-analyst` (Steps 2.1 + 2.2, unified classification + impact analysis)
 - Human review (Step 1.4, optional)
 
 ---

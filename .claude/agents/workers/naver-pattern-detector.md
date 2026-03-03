@@ -22,8 +22,8 @@ agent_swarm:
   max_tokens: 8000
 
   dependencies:
-    blocked_by: ["naver-signal-detector", "signal-classifier"]
-    blocks: ["priority-ranker"]
+    blocked_by: ["phase2-analyst"]
+    blocks: ["priority_score_calculator.py"]
 ```
 
 ---
@@ -56,7 +56,7 @@ outputs:
     format: "JSON"
   enriched_impact:
     file: "{data_root}/analysis/impact-assessment-{date}.json"
-    merge_with: "impact-analyzer output"
+    merge_with: "phase2-analyst impact-assessment output"
 ```
 
 ### Tipping Point Output Schema

@@ -35,6 +35,7 @@ Exit codes:
 import argparse
 import json
 import logging
+import re
 import sys
 from collections import Counter
 from datetime import datetime, timezone
@@ -52,7 +53,7 @@ logger = logging.getLogger("report_statistics_engine")
 # Constants
 # ---------------------------------------------------------------------------
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 ENGINE_ID = "report_statistics_engine.py"
 
 # STEEPs code → Korean label mapping
@@ -193,6 +194,9 @@ def compute_statistics(
     cross_evolution_map: Optional[dict] = None,
     exploration_candidates_path: Optional[str] = None,
     raw_crawl_data: Optional[dict] = None,
+    priority_ranked_data: Optional[dict] = None,
+    naver_raw_data: Optional[dict] = None,
+    top_priority_threshold: float = 3.5,
     language: str = "ko",
 ) -> dict:
     """Master function: classified-signals JSON → statistics dict.
@@ -203,6 +207,10 @@ def compute_statistics(
         evolution_map: Optional evolution-map JSON from signal_evolution_tracker
         cross_evolution_map: Optional cross-evolution-map JSON (integrated only)
         exploration_candidates_path: Optional path to exploration-candidates.json (WF1)
+        raw_crawl_data: Optional raw crawl JSON for WF4 multiglobal-news statistics
+        priority_ranked_data: Optional priority-ranked JSON for TOP_PRIORITY_COUNT (v1.4.0)
+        naver_raw_data: Optional WF3 raw scan JSON for Naver section counts (v1.4.0)
+        top_priority_threshold: Min priority_score for TOP_PRIORITY_COUNT (default: 3.5)
         language: Output language — "ko" (Korean, default) or "en" (English)
 
     Returns:
@@ -249,6 +257,9 @@ def compute_statistics(
         stats, workflow_type, evolution_map, cross_evolution_map,
         exploration_candidates_path=exploration_candidates_path,
         raw_crawl_data=raw_crawl_data,
+        priority_ranked_data=priority_ranked_data,
+        naver_raw_data=naver_raw_data,
+        top_priority_threshold=top_priority_threshold,
         language=language,
     )
 
@@ -902,6 +913,381 @@ def _empty_crawl_placeholders(language: str = "ko") -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Priority Statistics (Task 1.1 — v1.4.0)
+# ---------------------------------------------------------------------------
+
+def _to_float(value: Any) -> float:
+    """Safely convert a value to float; return 0.0 on failure."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def compute_top_priority_count(
+    priority_ranked_data: dict,
+    threshold: float = 3.5,
+    language: str = "ko",
+) -> dict[str, str]:
+    """Count signals above priority threshold from priority-ranked JSON.
+
+    Args:
+        priority_ranked_data: Parsed priority-ranked JSON (ranked_signals array).
+        threshold: Minimum priority_score to count as "top priority" (default: 3.5).
+                   Rationale: 3.5 = 70% of max score 5 = "high" priority tier.
+        language: Output language (kept for interface symmetry — value not used here).
+
+    Returns:
+        Dict with TOP_PRIORITY_COUNT → count string.
+    """
+    ranked_signals = priority_ranked_data.get("ranked_signals", [])
+    top_count = sum(
+        1 for s in ranked_signals
+        if _to_float(s.get("priority_score", 0)) >= threshold
+    )
+    return {"TOP_PRIORITY_COUNT": str(top_count)}
+
+
+def _empty_top_priority_placeholders() -> dict[str, str]:
+    """Return TOP_PRIORITY_COUNT placeholder with zero value."""
+    return {"TOP_PRIORITY_COUNT": "0"}
+
+
+# ---------------------------------------------------------------------------
+# WF3 Naver Crawl Statistics (Task 1.2 — v1.4.0)
+# ---------------------------------------------------------------------------
+
+# Naver section code → placeholder name mapping
+# Section codes match Naver's URL parameter: news.naver.com/section/{code}
+NAVER_SECTION_CODES = {
+    "100": "SECTION_100_COUNT",  # Politics (정치)
+    "101": "SECTION_101_COUNT",  # Economy (경제)
+    "102": "SECTION_102_COUNT",  # Society (사회)
+    "103": "SECTION_103_COUNT",  # Life/Culture (생활문화)
+    "104": "SECTION_104_COUNT",  # World (세계)
+    "105": "SECTION_105_COUNT",  # IT/Science (IT과학)
+}
+
+
+def compute_naver_crawl_statistics(
+    naver_raw_data: dict,
+    language: str = "ko",
+) -> dict[str, str]:
+    """Compute Naver section counts and crawl metadata from WF3 raw scan data.
+
+    Symmetric counterpart to WF4's compute_crawl_statistics(). Reads the
+    raw/scan-{date}.json produced by naver-news-crawler and generates
+    deterministic placeholder values for the WF3 skeleton appendix.
+
+    Args:
+        naver_raw_data: Parsed WF3 raw scan JSON (with items[], scan_metadata).
+        language: Output language — "ko" or "en".
+
+    Returns:
+        Dict mapping SECTION_100_COUNT through SECTION_105_COUNT,
+        CRAWL_DATETIME, TOTAL_ARTICLES, SN_RATIO, CRAWL_STRATEGY_USED
+        placeholder names to computed values.
+    """
+    items = naver_raw_data.get("items", [])
+    scan_meta = naver_raw_data.get("scan_metadata", {})
+    total_articles = len(items)
+
+    # Count articles by Naver section code.
+    # Section field examples: "IT/Science (105)", "Politics (100)", "105"
+    section_counts = {code: 0 for code in NAVER_SECTION_CODES}
+    for item in items:
+        section_field = str(item.get("source", {}).get("section", ""))
+        m = re.search(r'\b(10[0-5])\b', section_field)
+        if m:
+            code = m.group(1)
+            if code in section_counts:
+                section_counts[code] += 1
+
+    placeholders: dict[str, str] = {}
+    for code, ph_key in NAVER_SECTION_CODES.items():
+        placeholders[ph_key] = str(section_counts[code])
+
+    # Crawl datetime from execution proof
+    exec_proof = scan_meta.get("execution_proof", {})
+    crawl_dt = exec_proof.get(
+        "timestamp",
+        scan_meta.get("scan_date", "N/A"),
+    )
+    placeholders["CRAWL_DATETIME"] = str(crawl_dt)
+
+    # Total articles
+    placeholders["TOTAL_ARTICLES"] = str(total_articles)
+
+    # S/N ratio: raw collected vs after-dedup
+    dedup_stats = naver_raw_data.get("dedup_stats", {})
+    after_dedup = dedup_stats.get("after_dedup", total_articles)
+    placeholders["SN_RATIO"] = (
+        f"{total_articles}:{after_dedup}" if after_dedup else "N/A"
+    )
+
+    # Crawl strategy from execution proof
+    strategy = exec_proof.get("method", _t("not_applicable", language))
+    placeholders["CRAWL_STRATEGY_USED"] = str(strategy)
+
+    return placeholders
+
+
+def _empty_naver_crawl_placeholders(language: str = "ko") -> dict[str, str]:
+    """Return WF3 crawl placeholders with zero/N/A values."""
+    na = _t("not_applicable", language)
+    result = {ph: "0" for ph in NAVER_SECTION_CODES.values()}
+    result.update({
+        "CRAWL_DATETIME": "N/A",
+        "TOTAL_ARTICLES": "0",
+        "SN_RATIO": "N/A",
+        "CRAWL_STRATEGY_USED": na,
+    })
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Integrated Workflow Totals (Task 1.3 — v1.4.0)
+# ---------------------------------------------------------------------------
+
+def compute_integrated_workflow_totals(
+    wf_classified: dict[str, Optional[dict]],
+    language: str = "ko",
+) -> dict[str, str]:
+    """Count signals per workflow from classified-signals JSONs.
+
+    Args:
+        wf_classified: Dict mapping wf key to parsed classified-signals data.
+            Keys: "wf1", "wf2", "wf3", "wf4". Values: parsed JSON or None.
+        language: Output language (unused here; kept for interface symmetry).
+
+    Returns:
+        Dict with WF1_TOTAL_SIGNALS, WF2_TOTAL_SIGNALS, WF3_TOTAL_SIGNALS,
+        WF4_TOTAL_SIGNALS, TOTAL_COMBINED_SIGNALS placeholder values.
+    """
+    totals: dict[str, str] = {}
+    grand_total = 0
+
+    for wf_key, label in [("wf1", "WF1"), ("wf2", "WF2"), ("wf3", "WF3"), ("wf4", "WF4")]:
+        data = wf_classified.get(wf_key)
+        if data:
+            signals = (
+                data.get("classified_signals")
+                or data.get("signals")
+                or data.get("items", [])
+            )
+            count = len(signals)
+        else:
+            count = 0
+        totals[f"{label}_TOTAL_SIGNALS"] = str(count)
+        grand_total += count
+
+    totals["TOTAL_COMBINED_SIGNALS"] = str(grand_total)
+    return totals
+
+
+def _empty_integrated_totals() -> dict[str, str]:
+    """Return integrated workflow totals with zero values."""
+    return {
+        "WF1_TOTAL_SIGNALS": "0",
+        "WF2_TOTAL_SIGNALS": "0",
+        "WF3_TOTAL_SIGNALS": "0",
+        "WF4_TOTAL_SIGNALS": "0",
+        "TOTAL_COMBINED_SIGNALS": "0",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Integrated Execution Summary (Task 1.4 — v1.4.0)
+# ---------------------------------------------------------------------------
+
+def compute_integrated_execution_summary(
+    wf_exec_data: dict[str, dict],
+    language: str = "ko",
+) -> dict[str, str]:
+    """Compute execution summary for integrated report Section 8.4.
+
+    Args:
+        wf_exec_data: Dict mapping wf key to execution metadata dict.
+            Keys: "wf1", "wf2", "wf3", "wf4".
+            Each value dict may contain:
+                source_count (int), signal_count (int), dedup_count (int),
+                top_count (int), avg_psst (float), duration_seconds (int).
+
+    Returns:
+        Dict mapping ~28 placeholder names to string values for Section 8.4.
+    """
+    na = _t("not_applicable", language)
+    placeholders: dict[str, str] = {}
+
+    total_sources = 0
+    total_signals = 0
+    total_dedup = 0
+    total_psst_sum = 0.0
+    total_psst_count = 0
+    total_duration = 0
+
+    for wf_key, label in [("wf1", "WF1"), ("wf2", "WF2"), ("wf3", "WF3"), ("wf4", "WF4")]:
+        data = wf_exec_data.get(wf_key, {})
+
+        src = int(data.get("source_count", 0) or 0)
+        sig = int(data.get("signal_count", 0) or 0)
+        dedup = int(data.get("dedup_count", 0) or 0)
+        top = int(data.get("top_count", 0) or 0)
+        avg_psst = _to_float(data.get("avg_psst", 0))
+        duration = int(data.get("duration_seconds", 0) or 0)
+
+        placeholders[f"{label}_SOURCE_COUNT"] = str(src) if src > 0 else na
+        placeholders[f"{label}_SIGNAL_COUNT"] = str(sig)
+        placeholders[f"{label}_DEDUP_COUNT"] = str(dedup)
+        placeholders[f"{label}_TOP_COUNT"] = str(top)
+        placeholders[f"{label}_AVG_PSST"] = f"{avg_psst:.1f}" if avg_psst > 0 else na
+        placeholders[f"{label}_DURATION"] = f"{duration}s" if duration > 0 else na
+
+        total_sources += src
+        total_signals += sig
+        total_dedup += dedup
+        if avg_psst > 0:
+            total_psst_sum += avg_psst
+            total_psst_count += 1
+        total_duration += duration
+
+    placeholders["TOTAL_SOURCE_COUNT"] = str(total_sources) if total_sources > 0 else na
+    placeholders["TOTAL_SIGNAL_COUNT"] = str(total_signals)
+    placeholders["TOTAL_DEDUP_COUNT"] = str(total_dedup)
+    total_avg = total_psst_sum / total_psst_count if total_psst_count > 0 else 0.0
+    placeholders["TOTAL_AVG_PSST"] = f"{total_avg:.1f}" if total_avg > 0 else na
+    placeholders["TOTAL_DURATION"] = f"{total_duration}s" if total_duration > 0 else na
+
+    return placeholders
+
+
+def _empty_integrated_exec_summary(language: str = "ko") -> dict[str, str]:
+    """Return integrated execution summary placeholders with N/A values."""
+    na = _t("not_applicable", language)
+    result: dict[str, str] = {}
+    for label in ("WF1", "WF2", "WF3", "WF4"):
+        for suffix in ("SOURCE_COUNT", "SIGNAL_COUNT", "DEDUP_COUNT",
+                       "TOP_COUNT", "AVG_PSST", "DURATION"):
+            result[f"{label}_{suffix}"] = na
+    for suffix in ("SOURCE_COUNT", "SIGNAL_COUNT", "DEDUP_COUNT",
+                   "AVG_PSST", "DURATION"):
+        result[f"TOTAL_{suffix}"] = na
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Weekly Aggregates (Task 1.5 — v1.4.0)
+# ---------------------------------------------------------------------------
+
+def compute_weekly_aggregates(
+    daily_stats: list[dict],
+    language: str = "ko",
+) -> dict[str, str]:
+    """Aggregate daily report-statistics JSONs into weekly summary placeholders.
+
+    Reads signal totals and evolution metrics from each daily stats file
+    and produces aggregated counts for the weekly report skeleton.
+
+    Args:
+        daily_stats: List of daily report-statistics dicts.
+            Each dict: {"workflow_type": str, "total_signals": int,
+                        "placeholders": {evolution counts, ...}}.
+            Supports multi-WF input (mixing standard/naver/arxiv/multiglobal-news).
+        language: Output language (unused here; kept for interface symmetry).
+
+    Returns:
+        Dict mapping weekly placeholder names to aggregated string values:
+            TOTAL_SIGNALS_ANALYZED, WF1/WF2/WF3/WF4_TOTAL_SIGNALS,
+            ACCELERATING_COUNT, DECELERATING_COUNT,
+            NEW_EMERGED_COUNT, FADED_COUNT, CLUSTER_COUNT, TOP_TRENDS_COUNT.
+    """
+    if not daily_stats:
+        return _empty_weekly_aggregates()
+
+    # workflow_type → wf key mapping
+    _WF_MAP = {
+        "standard": "wf1",
+        "arxiv": "wf2",
+        "naver": "wf3",
+        "multiglobal-news": "wf4",
+    }
+
+    wf_totals: dict[str, int] = {"wf1": 0, "wf2": 0, "wf3": 0, "wf4": 0}
+    grand_total = 0
+    accelerating = 0
+    decelerating = 0
+    new_emerged = 0
+    faded = 0
+
+    for stats in daily_stats:
+        wt = stats.get("workflow_type", "standard")
+        total = int(stats.get("total_signals", 0) or 0)
+        grand_total += total
+
+        wf_key = _WF_MAP.get(wt, "wf1")
+        wf_totals[wf_key] += total
+
+        # Accumulate evolution counts stored as plain integer strings
+        ph = stats.get("placeholders", {})
+        accelerating += _safe_int(ph.get("EVOLUTION_STRENGTHENING_COUNT", 0))
+        decelerating += _safe_int(ph.get("EVOLUTION_WEAKENING_COUNT", 0))
+        new_emerged += _safe_int(ph.get("EVOLUTION_NEW_COUNT", 0))
+        faded += _safe_int(ph.get("EVOLUTION_FADED_COUNT", 0))
+
+    # CLUSTER_COUNT: approximation using active threads from the last (most recent) day.
+    # Active threads represent signals that persisted and may be converging.
+    last_stats = daily_stats[-1]
+    cluster_count = _safe_int(
+        last_stats.get("placeholders", {}).get("EVOLUTION_ACTIVE_THREADS", 0)
+    )
+
+    # TOP_TRENDS_COUNT: strengthening threads from the last day (consistently rising signals).
+    top_trends = _safe_int(
+        last_stats.get("placeholders", {}).get("EVOLUTION_STRENGTHENING_COUNT", 0)
+    )
+
+    return {
+        "TOTAL_SIGNALS_ANALYZED": str(grand_total),
+        "WF1_TOTAL_SIGNALS": str(wf_totals["wf1"]),
+        "WF2_TOTAL_SIGNALS": str(wf_totals["wf2"]),
+        "WF3_TOTAL_SIGNALS": str(wf_totals["wf3"]),
+        "WF4_TOTAL_SIGNALS": str(wf_totals["wf4"]),
+        "ACCELERATING_COUNT": str(accelerating),
+        "DECELERATING_COUNT": str(decelerating),
+        "NEW_EMERGED_COUNT": str(new_emerged),
+        "FADED_COUNT": str(faded),
+        "CLUSTER_COUNT": str(cluster_count),
+        "TOP_TRENDS_COUNT": str(top_trends),
+    }
+
+
+def _safe_int(value: Any) -> int:
+    """Extract integer from a value; return 0 on failure or empty string."""
+    if value is None:
+        return 0
+    s = str(value).strip()
+    m = re.match(r'^(\d+)', s)
+    return int(m.group(1)) if m else 0
+
+
+def _empty_weekly_aggregates() -> dict[str, str]:
+    """Return weekly aggregate placeholders with zero values."""
+    return {
+        "TOTAL_SIGNALS_ANALYZED": "0",
+        "WF1_TOTAL_SIGNALS": "0",
+        "WF2_TOTAL_SIGNALS": "0",
+        "WF3_TOTAL_SIGNALS": "0",
+        "WF4_TOTAL_SIGNALS": "0",
+        "ACCELERATING_COUNT": "0",
+        "DECELERATING_COUNT": "0",
+        "NEW_EMERGED_COUNT": "0",
+        "FADED_COUNT": "0",
+        "CLUSTER_COUNT": "0",
+        "TOP_TRENDS_COUNT": "0",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Placeholder Map Builder
 # ---------------------------------------------------------------------------
 
@@ -912,12 +1298,15 @@ def build_placeholder_map(
     cross_evolution_map: Optional[dict] = None,
     exploration_candidates_path: Optional[str] = None,
     raw_crawl_data: Optional[dict] = None,
+    priority_ranked_data: Optional[dict] = None,
+    naver_raw_data: Optional[dict] = None,
+    top_priority_threshold: float = 3.5,
     language: str = "ko",
 ) -> dict[str, str]:
     """Raw stats → skeleton placeholder key→value mapping.
 
     Universal (all workflows):
-        TOTAL_NEW_SIGNALS, DOMAIN_DISTRIBUTION, EVOLUTION_*
+        TOTAL_NEW_SIGNALS, DOMAIN_DISTRIBUTION, EVOLUTION_*, TOP_PRIORITY_COUNT
 
     WF1 (standard) additional (when exploration active):
         EXPLORATION_GAPS, EXPLORATION_METHOD, EXPLORATION_DISCOVERED,
@@ -925,6 +1314,11 @@ def build_placeholder_map(
 
     WF3 (naver) additional:
         FSSF_*_COUNT/PCT, H*_COUNT/PCT, FSSF_DIST_*_COUNT, TIPPING_POINT_ALERT_SUMMARY
+        SECTION_100_COUNT through SECTION_105_COUNT, CRAWL_DATETIME, TOTAL_ARTICLES,
+        SN_RATIO, CRAWL_STRATEGY_USED (when naver_raw_data provided)
+
+    WF4 additional:
+        TOTAL_SITES_CRAWLED, BY_LANGUAGE_*, CRAWL_SITE_TABLE, TRANSLATION_*
 
     Integrated additional:
         INT_EVOLUTION_CROSS_TABLE
@@ -936,6 +1330,14 @@ def build_placeholder_map(
     # --- Universal ---
     placeholders["TOTAL_NEW_SIGNALS"] = str(total)
     placeholders["DOMAIN_DISTRIBUTION"] = format_domain_distribution(raw["steeps"], language=language)
+
+    # --- TOP_PRIORITY_COUNT (universal — when priority_ranked_data provided) ---
+    if priority_ranked_data:
+        placeholders.update(compute_top_priority_count(
+            priority_ranked_data, threshold=top_priority_threshold, language=language,
+        ))
+    else:
+        placeholders.update(_empty_top_priority_placeholders())
 
     # --- WF3/WF4-specific (FSSF-enabled workflows) ---
     if workflow_type in ("naver", "multiglobal-news"):
@@ -965,6 +1367,13 @@ def build_placeholder_map(
 
         # Tipping Point summary table
         placeholders["TIPPING_POINT_ALERT_SUMMARY"] = format_tipping_point_summary_table(tp, language=language)
+
+    # --- WF3 Naver crawl statistics (section counts + crawl metadata) ---
+    if workflow_type == "naver":
+        if naver_raw_data:
+            placeholders.update(compute_naver_crawl_statistics(naver_raw_data, language=language))
+        else:
+            placeholders.update(_empty_naver_crawl_placeholders(language=language))
 
     # --- Evolution (universal, when evolution data available) ---
     if evolution_map:
@@ -1141,7 +1550,47 @@ def main():
     parser.add_argument(
         "--raw-crawl-data",
         default=None,
-        help="Path to raw crawl data JSON (for multiglobal-news mode: crawl/translation stats)",
+        help="Path to raw crawl data JSON (WF4 multiglobal-news: crawl/translation stats;"
+             " WF3 naver: section counts)",
+    )
+    # v1.4.0 new args: priority statistics
+    parser.add_argument(
+        "--priority-ranked",
+        default=None,
+        help="Path to priority-ranked JSON for TOP_PRIORITY_COUNT computation",
+    )
+    parser.add_argument(
+        "--top-priority-threshold",
+        default=3.5, type=float,
+        help="Min priority_score for TOP_PRIORITY_COUNT (default: 3.5)",
+    )
+    # v1.4.0 new args: integrated workflow totals (integrated mode)
+    parser.add_argument(
+        "--wf1-classified", default=None,
+        help="Path to WF1 classified-signals JSON (integrated mode: workflow totals)",
+    )
+    parser.add_argument(
+        "--wf2-classified", default=None,
+        help="Path to WF2 classified-signals JSON (integrated mode: workflow totals)",
+    )
+    parser.add_argument(
+        "--wf3-classified", default=None,
+        help="Path to WF3 classified-signals JSON (integrated mode: workflow totals)",
+    )
+    parser.add_argument(
+        "--wf4-classified", default=None,
+        help="Path to WF4 classified-signals JSON (integrated mode: workflow totals)",
+    )
+    # v1.4.0 new args: integrated execution summary (integrated mode)
+    parser.add_argument(
+        "--wf-exec-data", default=None,
+        help="Path to JSON with execution metadata for all WFs (integrated mode: Section 8.4)",
+    )
+    # v1.4.0 new args: weekly aggregates (weekly mode)
+    parser.add_argument(
+        "--daily-stats-data",
+        nargs="+", default=None,
+        help="Paths to daily report-statistics JSONs (weekly mode: aggregate counts)",
     )
     parser.add_argument(
         "--language", default="ko", choices=["ko", "en"],
@@ -1150,7 +1599,7 @@ def main():
     args = parser.parse_args()
     lang = args.language
 
-    # ── Integrated mode: merge evolution-maps + cross-evolution ──
+    # ── Integrated mode: merge evolution-maps + cross-evolution + workflow totals ──
     if args.workflow_type == "integrated":
         evo_maps = []
         for evo_path in (args.evolution_maps or []):
@@ -1174,6 +1623,27 @@ def main():
         else:
             placeholders["INT_EVOLUTION_CROSS_TABLE"] = _empty_cross_evolution_placeholder(language=lang)
 
+        # v1.4.0: WF1–WF4 workflow totals (Section 1)
+        wf_classified: dict[str, Optional[dict]] = {
+            "wf1": _load_json_file(args.wf1_classified, "wf1-classified") if args.wf1_classified else None,
+            "wf2": _load_json_file(args.wf2_classified, "wf2-classified") if args.wf2_classified else None,
+            "wf3": _load_json_file(args.wf3_classified, "wf3-classified") if args.wf3_classified else None,
+            "wf4": _load_json_file(args.wf4_classified, "wf4-classified") if args.wf4_classified else None,
+        }
+        if any(v is not None for v in wf_classified.values()):
+            placeholders.update(compute_integrated_workflow_totals(wf_classified, language=lang))
+        else:
+            placeholders.update(_empty_integrated_totals())
+
+        # v1.4.0: Integrated execution summary (Section 8.4)
+        wf_exec = None
+        if args.wf_exec_data:
+            wf_exec = _load_json_file(args.wf_exec_data, "wf-exec-data")
+        if wf_exec:
+            placeholders.update(compute_integrated_execution_summary(wf_exec, language=lang))
+        else:
+            placeholders.update(_empty_integrated_exec_summary(language=lang))
+
         stats = {
             "engine_version": VERSION,
             "computed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1184,7 +1654,7 @@ def main():
             "placeholders": placeholders,
         }
 
-    # ── Weekly mode: aggregate daily evolution-maps ──
+    # ── Weekly mode: aggregate daily evolution-maps + daily stats ──
     elif args.workflow_type == "weekly":
         evo_maps = []
         for evo_path in (args.weekly_evolution_maps or []):
@@ -1193,6 +1663,17 @@ def main():
                 evo_maps.append(data)
 
         placeholders = compute_weekly_evolution_stats(evo_maps, language=lang)
+
+        # v1.4.0: Weekly aggregates from daily report-statistics JSONs
+        daily_stats_list = []
+        for stats_path in (args.daily_stats_data or []):
+            data = _load_json_file(stats_path, "daily-stats")
+            if data:
+                daily_stats_list.append(data)
+        if daily_stats_list:
+            placeholders.update(compute_weekly_aggregates(daily_stats_list, language=lang))
+        else:
+            placeholders.update(_empty_weekly_aggregates())
 
         stats = {
             "engine_version": VERSION,
@@ -1203,7 +1684,7 @@ def main():
             "placeholders": placeholders,
         }
 
-    # ── Standard mode (standard/naver/arxiv): requires --input ──
+    # ── Standard mode (standard/naver/arxiv/multiglobal-news): requires --input ──
     else:
         if not args.input:
             logger.error("--input is required for standard/naver/arxiv workflow types")
@@ -1224,15 +1705,28 @@ def main():
             if evolution_map:
                 logger.info(f"Loaded evolution map: {args.evolution_map}")
 
-        # Load raw crawl data if provided (WF4 multiglobal-news)
+        # Load raw crawl data if provided (WF4 multiglobal-news OR WF3 naver)
         raw_crawl = None
+        naver_raw = None
         if args.raw_crawl_data:
-            raw_crawl = _load_json_file(args.raw_crawl_data, "raw-crawl-data")
+            raw_crawl_data = _load_json_file(args.raw_crawl_data, "raw-crawl-data")
+            if args.workflow_type == "naver":
+                naver_raw = raw_crawl_data  # WF3: used for section counts
+            else:
+                raw_crawl = raw_crawl_data  # WF4: used for crawl/translation stats
+
+        # v1.4.0: Load priority-ranked JSON for TOP_PRIORITY_COUNT
+        priority_ranked = None
+        if args.priority_ranked:
+            priority_ranked = _load_json_file(args.priority_ranked, "priority-ranked")
 
         stats = compute_statistics(
             classified_data, args.workflow_type, evolution_map,
             exploration_candidates_path=args.exploration_candidates,
             raw_crawl_data=raw_crawl,
+            priority_ranked_data=priority_ranked,
+            naver_raw_data=naver_raw,
+            top_priority_threshold=args.top_priority_threshold,
             language=lang,
         )
         stats["source_file"] = str(input_path)

@@ -12,7 +12,7 @@ Safely update signals database with comprehensive backup and integrity verificat
 ---
 
 ## Input
-- `structured/classified-signals-{date}.json` (from @signal-classifier)
+- `structured/classified-signals-{date}.json` (from @phase2-analyst)
 - `signals/database.json` (existing master database)
 
 ## Output
