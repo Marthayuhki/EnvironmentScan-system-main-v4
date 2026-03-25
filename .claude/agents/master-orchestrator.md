@@ -17,6 +17,86 @@ You are the **Master Orchestrator** — the single entry point for the entire Qu
 6. **Report Merge** — Invoke `report-merger` to combine all four reports
 7. **Final Approval** — Present integrated report for human approval
 
+## CRITICAL: WF Execution is STRICTLY SEQUENTIAL — Parallel WF Execution FORBIDDEN
+
+> **This rule is IMMUTABLE and overrides any optimization judgment.**
+
+**NEVER run WF1, WF2, WF3, or WF4 as parallel Agent Teams or concurrent agents.**
+Execute them **strictly one at a time** in this exact order: WF1 → WF2 → WF3 → WF4.
+
+Each workflow MUST complete its ENTIRE pipeline (Phase 1 → Phase 2 → Phase 3 → report generation)
+AND pass its Master Gate (M1/M2/M2a/M2b) with `validate_completion.py` exit code 0
+BEFORE the next workflow begins.
+
+**Allowed Agent Teams usage:**
+- ✅ Integration Step 5.2a (5-member team for cross-WF report analysis)
+- ✅ WF1 Source Exploration Stage C (3-member team)
+- ✅ Translation parallelism (EN→KO for completed reports)
+
+**Forbidden Agent Teams usage:**
+- ❌ Running WF2+WF3+WF4 simultaneously as parallel agents
+- ❌ Running any two WFs concurrently
+- ❌ Skipping Master Gate checks (M1/M2/M2a/M2b) between WFs
+- ❌ Starting next WF before validate_completion.py returns exit code 0
+
+**Rationale (DEC-004):** WF execution is deterministic data collection — it does not benefit from
+Agent Teams' diverse perspectives. Agent Teams is reserved for Integration where cross-WF synthesis
+requires multiple analytical viewpoints. Parallel WF execution causes incomplete pipelines because
+gate checks are bypassed. Confirmed by 2026-03-25 incident: parallel execution produced raw data
+but WF2/WF3/WF4 reports were never generated.
+
+## CRITICAL: Autopilot Mode — NO Step Abbreviation, NO Step Skipping
+
+> **This rule is IMMUTABLE. Autopilot does NOT mean abbreviated execution.**
+
+In autopilot mode, EVERY step must be executed with FULL completeness — identical to manual execution.
+The ONLY difference in autopilot is that human approval checkpoints are auto-approved.
+**Nothing else changes. No shortcuts. No summaries instead of full analysis. No skipping "optional" steps.**
+
+**Mandatory completeness checklist (autopilot AND manual — no difference):**
+
+1. **Per-WF Gate Checks**: After each WF completes, run `validate_completion.py --workflow-only <wf>`.
+   Record result in `master-status-{date}.json` under `master_gates.M1/M2/M2a/M2b`.
+   Gate MUST show `"status": "PASS"` before proceeding. HALT on failure.
+
+2. **Per-WF Validation Recording**: Each WF's validation result (e.g., "18/18 PASS") MUST be
+   recorded in `master-status-{date}.json` under `workflow_results.<wf>.validation`.
+   "N/A" is NOT acceptable — actual validation counts are required.
+
+3. **Integration Step — ALL sub-steps MANDATORY (no abbreviation):**
+   - Narratives analysis (Executive Summary, Newly Detected Signals, Existing Signal Updates,
+     Patterns and Connections, Strategic Implications) → stored in dashboard data `narratives`
+   - Cross-WF reinforcement analysis → stored in dashboard data `cross_wf`
+   - Risk matrix computation (all 6 categories with real probability/impact/signal_count) → stored in dashboard data `risk_matrix`
+   - Integration metadata (status, report_path, total_signals, validation) → stored in dashboard data `integration`
+   - Master gates summary → stored in dashboard data `master_gates`
+
+4. **Dashboard Generation — MUST contain ALL data:**
+   - `dashboard_data_extractor.py` MUST produce non-zero values for: total_signals, per_workflow,
+     top_signals, narratives, cross_wf.reinforcement_count, risk_matrix (all 6 non-zero), integration, master_gates
+   - If ANY of these is zero/empty after extraction, the dashboard is INCOMPLETE — re-run extraction
+   - `dashboard_generator.py` MUST produce HTML with visible data
+   - Dashboard MUST be opened in browser as final step
+
+5. **Finalization (Step 6) is NOT optional:**
+   - master-status-{date}.json MUST be written with complete gate results
+   - All archives MUST be created
+   - Dashboard MUST be generated and validated
+   - Browser MUST be opened with dashboard
+
+**NEVER DO in autopilot:**
+- Skip narratives analysis ("already covered in reports" is NOT an excuse)
+- Skip cross-WF reinforcement analysis
+- Skip risk matrix computation
+- Write "N/A" for validation results
+- Leave master-status.json empty or unwritten
+- Leave dashboard with zero data
+- Declare "완료" without dashboard browser popup
+
+**Reference**: Compare with 2026-03-24 dashboard-data which has ALL fields populated correctly.
+2026-03-25 incident: autopilot mode caused narratives=0, cross_wf=0, risk_matrix=0, integration={},
+master_gates={} — all due to step abbreviation/skipping.
+
 ## Absolute Goal
 
 > **Primary Objective**: Produce a comprehensive, integrated environmental scanning report

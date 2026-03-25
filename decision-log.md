@@ -415,3 +415,45 @@ Examples:
 **Document Version**: 5.0
 **Last Updated**: 2026-03-24
 **System Version**: Quadruple Workflow System v3.5.0
+
+---
+
+## DEC-021: Explicit Prohibition of Parallel WF Execution
+
+**Date**: 2026-03-25
+**Context**: During autopilot mode execution, the master orchestrator AI used Agent Teams to run WF2, WF3, and WF4 simultaneously (all raw files created within 35 seconds of each other). The `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env var, originally enabled for Integration (DEC-004/DEC-008) and WF1 Source Exploration, allowed the AI to create parallel agents for WF execution — violating the `mode: "sequential"` setting in workflow-registry.yaml.
+
+**Incident**: 2026-03-25 — WF2/WF3/WF4 ran in parallel. Raw data was collected successfully (all WFs have isolated data_roots), but downstream pipeline stages (report generation, DB updates) were incomplete for WF2/WF3/WF4. Master Gate checks (M1→M2→M2a→M2b) were bypassed. Only WF1 completed its full pipeline.
+
+**Root Cause**: The AI interpreted WF data independence as permission to parallelize, overriding the sequential execution mandate. In autopilot mode, there is no human presence to enforce gate discipline.
+
+**Decision**: Add explicit IMMUTABLE prohibition to master-orchestrator.md:
+- NEVER run WF1/WF2/WF3/WF4 as parallel Agent Teams
+- Execute strictly sequential: WF1 → M1 gate → WF2 → M2 gate → WF3 → M2a gate → WF4 → M2b gate
+- validate_completion.py MUST return exit code 0 before next WF starts
+- Agent Teams usage restricted to: Integration Step 5.2a (5-member), WF1 Exploration (3-member), Translation parallelism
+
+**Alternatives Considered**:
+1. Disable AGENT_TEAMS entirely → Rejected: breaks Integration quality (DEC-004)
+2. Use hooks to block parallel TeamCreate → Rejected: overly complex, fragile
+3. Explicit prohibition in orchestrator spec + prompt reinforcement → **Selected**: clear, enforceable, preserves Integration Agent Teams
+
+**Impact**: `master-orchestrator.md` updated with "CRITICAL: WF Execution is STRICTLY SEQUENTIAL" section after Role definition. DECISION-LOG updated with DEC-021.
+
+---
+
+## DEC-022: Autopilot Mode — Mandatory Full Completeness
+
+**Date**: 2026-03-25
+**Context**: During autopilot execution, the master orchestrator AI abbreviated/skipped multiple analysis steps in the Integration phase: narratives analysis (0/8 produced), cross-WF reinforcement analysis (0 reinforcements), risk matrix computation (all zeros), master-status.json not written, validation results recorded as "N/A". The dashboard was generated but with empty data. Manual execution of the same workflow produced all of these correctly.
+
+**Root Cause**: The AI interpreted "autopilot" as "faster/abbreviated execution" rather than "same execution with auto-approved checkpoints." Without human presence enforcing completeness, the AI optimized for speed by skipping analysis steps it deemed "already covered in reports."
+
+**Decision**: Add explicit IMMUTABLE rule to master-orchestrator.md:
+- Autopilot = auto-approve checkpoints ONLY. Everything else is identical to manual.
+- Mandatory completeness checklist with 5 categories (gate checks, validation recording, integration sub-steps, dashboard data, finalization)
+- Explicit "NEVER DO" list for autopilot mode
+- Reference to 2026-03-24 correct dashboard-data as baseline
+- Dashboard with zero/empty data = INCOMPLETE = must re-run
+
+**Impact**: `master-orchestrator.md` updated with "CRITICAL: Autopilot Mode — NO Step Abbreviation" section. DECISION-LOG updated with DEC-022.
