@@ -2,13 +2,27 @@
 
 > **Quadruple Environmental Scanning System** | Quick Reference (English)
 >
-> Version: 8.0 | Last Updated: 2026-03-09
+> Version: 9.0 | Last Updated: 2026-03-29
 
 This document is the concise English-language companion to `USER-MANUAL.md`. For the full Korean operational guide, refer to that document.
 
 ---
 
+## Easiest Usage
+
+Just type `/env-scan:run` (or simply say "시작하자") -- the system handles everything automatically. You will be prompted at **9 checkpoints** to review analysis results and approve reports. At the end you receive:
+
+- 4 workflow reports (EN + KO each)
+- 1 integrated report (EN + KO)
+- 1 interactive HTML dashboard
+
+That is it. No configuration needed for a standard daily scan.
+
+---
+
 ## 1. Quick Start
+
+> **Tip**: The simplest way to use the system is to type `/env-scan:run` or say "시작하자". The system launches the full quadruple scan automatically.
 
 ### Prerequisites
 
@@ -225,6 +239,38 @@ Signals are classified into 8 types with associated priority levels:
 
 ---
 
+## 5.1 Dashboard Bilingual Features
+
+The HTML dashboard (`dashboard.html`) provides bilingual viewing and interactive visualization:
+
+### Bilingual Signal Display
+
+- **Top 20 table** and **WF summary tables** show signal titles in both English and Korean (title_ko) side by side
+- This applies to all signal listing areas across every summary tab
+
+### Narrative Section Language Toggle
+
+- The **Patterns & Clusters**, **Strategic Implications**, and **Scenario & Risk** tabs each have **[한국어] / [English]** toggle sub-tabs
+- Switch between languages without leaving the dashboard
+
+### Interactive Timeline Signal Map
+
+- The **Timeline** tab includes an interactive **D3.js signal map** (STEEPs x Impact bubble chart)
+- Bubbles are sized by impact score and colored by STEEPs category
+- Hover over any bubble for signal details (title, source, priority, FSSF type)
+- **WF filter buttons** allow toggling individual workflow signals on/off
+
+### Timeline Sub-tabs
+
+The Timeline tab is divided into two sub-tabs:
+
+| Sub-tab | Content |
+|---------|---------|
+| **[시그널 맵]** (default) | Interactive D3.js visual map described above |
+| **[타임라인 상세]** | Full markdown-rendered timeline detail view |
+
+---
+
 ## 6. Configuration
 
 ### Key Config Files
@@ -357,6 +403,6 @@ All collected data (raw/, structured/) is persisted to disk and never lost.
 
 ---
 
-**Document Version**: 8.0
-**Last Updated**: 2026-03-09
+**Document Version**: 9.0
+**Last Updated**: 2026-03-29
 **System Version**: Quadruple Workflow System v3.2.0 (Python 원천봉쇄 + Hallucination Prevention + 4-Layer Quality Defense + Timeline Map Challenge-Response)

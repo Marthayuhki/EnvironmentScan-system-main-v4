@@ -2,7 +2,7 @@
 
 > **Quadruple Environmental Scanning System** | Architecture Reference (English)
 >
-> Version: 3.2.0 | Last Updated: 2026-03-09
+> Version: 3.6.0 | Last Updated: 2026-03-29
 
 This document is the concise English-language companion to `WORKFLOW-ARCHITECTURE-AND-PHILOSOPHY.md`. For the full Korean technical specification, refer to that document.
 
@@ -111,7 +111,7 @@ Every workflow follows the same strict sequential structure. Phases cannot be sk
 | 3.4 | **[REQUIRED] Human report approval** | -- |
 | 3.5 | Self-Improvement Analysis (SIE) | self-improvement-analyzer |
 
-**Pipeline Gate 2** (Phase 2 → Phase 3 transition): Python-enforced via `validate_phase2_output.py` (8 checks: PG2-001~008). Validates classified-signals, impact-assessment, and priority-ranked JSON outputs exist and contain valid data (required fields, score ranges, STEEPs distribution). Exit code 0 = PASS, 1 = HALT.
+**Pipeline Gate 2** (Phase 2 → Phase 3 transition): Python-enforced via `validate_phase2_output.py` (9 checks: PG2-001~009). Validates classified-signals, impact-assessment, and priority-ranked JSON outputs exist and contain valid data (required fields, score ranges, STEEPs distribution). PG2-009 validates Korean title (`title_ko`) presence for all signals. Pipeline Gate 2 now runs for **ALL 4 workflows** (WF1/WF2 previously used LLM-only validation; now Python-enforced via `validate_phase2_output.py`). Exit code 0 = PASS, 1 = HALT.
 
 **Gate checks** (6 per transition) enforce quality between phases.
 
@@ -174,6 +174,17 @@ The Timeline Map receives the **same quality defense rigor** as regular reports:
 
 **Python 원천봉쇄 Boundary (PB-1~PB-6)**: Pre-rendered data from Python is immutable. TQ-009 (PB-1 ASCII verbatim), TQ-010 (PB-2 table cells), TQ-011 (PB-3 lead-lag days) verify that LLM did not alter Python-computed values.
 
+### Dashboard (v3.6.0)
+
+The dashboard is the interactive HTML visualization of integrated scan results.
+
+- **Bilingual signal display**: All signal titles display English + Korean (`title_ko`). The `title_ko` field is generated during Phase 2 by the LLM and extracted at dashboard time by Python -- never generated at dashboard time.
+- **Narrative EN/KO subtabs**: Patterns, Strategic Implications, and Scenario sections have EN/KO subtabs with Korean (KO) as the default display language.
+- **D3.js interactive signal map**: The timeline tab includes a D3.js STEEPs x Impact bubble chart for interactive signal exploration.
+- **WF-specific field mapping**: WF1 nested `classification.*` fields and WF2 `steeps_primary`/`significance` fields are correctly extracted by the dashboard data pipeline.
+- **Impact score normalization**: WF1 signals use a 0-100 impact scale; the dashboard pipeline automatically normalizes these to 0-10 to match other workflows.
+- **100% Python pipeline**: The entire dashboard data extraction and generation pipeline is Python -- no LLM involvement.
+
 ---
 
 ## 6. Python/LLM Split
@@ -199,13 +210,15 @@ These modules perform calculations, validation, and data manipulation where corr
 
 > **priority_score_calculator.py** (Python 원천봉쇄): Enforces deterministic priority scoring. The LLM (`@phase2-analyst`) provides classification + impact analysis output fields; Python reads them and applies the formula. No LLM is invoked at Step 2.3.
 
+> **Dashboard pipeline** (Python 원천봉쇄): `title_ko` is extracted from Phase 2 classified-signals output at dashboard build time. The dashboard pipeline never generates Korean titles -- it only reads what `@phase2-analyst` produced. This keeps the dashboard 100% deterministic Python.
+
 ### Semantic Judgment (LLM) -- 9 agent tasks
 
 These require judgment, synthesis, and natural language generation:
 
 | Task | Agent | Notes |
 |------|-------|-------|
-| Signal classification + impact analysis | **@phase2-analyst** (unified Steps 2.1+2.2) | Replaces signal-classifier + impact-analyzer + priority-ranker |
+| Signal classification + impact analysis + title_ko | **@phase2-analyst** (unified Steps 2.1+2.2, Section C-2 mandates `title_ko` for all WFs) | Replaces signal-classifier + impact-analyzer + priority-ranker |
 | FSSF classification | naver/multiglobal-signal-detector | WF3/WF4 only |
 | Pattern detection | naver/multiglobal-pattern-detector | WF3/WF4 only |
 | Report generation | report-generator | L1 skeleton-fill |
@@ -350,7 +363,7 @@ Human corrections (priority adjustments, classification fixes) feed back into SI
 | `priority_score_calculator.py` | **Step 2.3 Python 원천봉쇄** — deterministic priority scoring (impact×0.40 + prob×0.30 + urgency×0.20 + novelty×0.10) |
 | `report_statistics_engine.py` | Report quality metrics and placeholder computation |
 | `validate_report_quality.py` | L2b cross-reference QC (14 checks: QC-001~014, incl. QC-014 exec summary stats) |
-| `validate_phase2_output.py` | **Pipeline Gate 2** — Phase 2→3 transition enforcement (8 checks: PG2-001~008) |
+| `validate_phase2_output.py` | **Pipeline Gate 2** — Phase 2→3 transition enforcement (9 checks: PG2-001~009, incl. PG2-009 title_ko validation) |
 | `translation_validator.py` | Translation structural integrity + TERM fidelity (TERM-001~003) |
 | `bilingual_resolver.py` | EN/KO term resolution |
 
@@ -499,6 +512,6 @@ These 10 elements can never be changed, not even by user override:
 
 ---
 
-**Document Version**: 5.0
-**Last Updated**: 2026-03-09
-**System Version**: Quadruple Workflow System v3.2.0 (Python 원천봉쇄 + Hallucination Prevention + 4-Layer Quality Defense + Timeline Map Challenge-Response)
+**Document Version**: 6.0
+**Last Updated**: 2026-03-29
+**System Version**: Quadruple Workflow System v3.6.0 (Python 원천봉쇄 + Hallucination Prevention + 4-Layer Quality Defense + Timeline Map Challenge-Response + Bilingual Dashboard + PG2-009 title_ko)

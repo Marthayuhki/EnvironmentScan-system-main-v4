@@ -102,6 +102,7 @@ Human-in-the-Loop checkpoints ensure oversight and cannot be removed. The immuta
 - **English-first workflow**: Reports are generated in English → validated with EN profiles → translated to Korean by translation sub-agent → validated structurally by `translation_validator.py`
 - STEEPs terminology must be 100% preserved in translation
 - All reports are delivered in Korean
+- Dashboard displays bilingual signal titles (EN primary + KO subtitle) and narrative EN/KO subtabs
 
 ### 2.7 Database Atomicity
 
@@ -129,6 +130,8 @@ Every report must pass through all defense layers:
 | L4 | Golden Reference | 9-field signal example anchors completeness |
 
 Progressive Retry applies when any layer fails: targeted fix → full regen → human escalation (max 2 retries).
+
+**Pipeline Gate 2 (Phase 2→3 transition)**: `validate_phase2_output.py` — 9 checks (PG2-001~009) for all workflows. PG2-009: Korean title (`title_ko`) presence check for all classified signals (Python-enforced, all 4 WFs).
 
 **Completion Gate (v3.2.0)**: Master Gate M4 — final deliverables completeness verification. Runs AFTER all reports are generated, BEFORE finalization. Cannot be skipped even in autopilot mode.
 - M4: `validate_completion.py` (9 checks, CG-001~009: EN/KO reports exist, no PLACEHOLDERs, timeline map, KO ratio ≥30%, archives, no skeleton headers)

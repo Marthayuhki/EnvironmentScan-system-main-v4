@@ -54,7 +54,7 @@ Agent definitions live in `.claude/agents/`. Worker agents live in `.claude/agen
 
 Reference files under `.claude/skills/env-scanner/references/` contain report skeletons, format guides, and STEEPs framework details.
 
-### Task Management (Python 원천봉쇄 — v3.5.1)
+### Task Management (Python 원천봉쇄 — v3.6.0)
 
 Task tracking provides Ctrl+T visibility during 30-60 min scans. **MANDATORY execution** at Step 0.4.
 
@@ -62,12 +62,13 @@ Task tracking provides Ctrl+T visibility during 30-60 min scans. **MANDATORY exe
 - LLM copies Python-generated subject/description **verbatim** into TaskCreate calls (no paraphrasing)
 - `master_task_manager.py --action verify` post-checks: 7 keys, no empty IDs, no duplicates
 - Each step boundary: `master_task_manager.py --action step-complete` verifies gate before TaskUpdate
+- PG2-009: title_ko Korean presence check (all 4 WFs, Python-enforced via `validate_phase2_output.py`)
 
 ### Context Preservation
 
 Context backup hooks (`.claude/hooks/scripts/save_context.py`, `restore_context.py`) preserve workflow state on PreCompact events. On session restoration, if `.claude/context-backups/latest-context.md` exists, read it to resume. Otherwise, review memory files in the auto-memory directory for session context.
 
-### Quality-First Context Memory (v3.5.1)
+### Quality-First Context Memory (v3.6.0)
 
 Context loading optimized for **result quality**, not token savings:
 

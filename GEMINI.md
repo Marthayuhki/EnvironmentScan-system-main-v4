@@ -11,6 +11,8 @@
 - **SOT validation**: Before running any workflow, execute `python3 env-scanning/scripts/validate_registry.py` and confirm exit code 0 (68 checks).
 - **Master Gate M4**: After integration, `python3 env-scanning/scripts/validate_completion.py --sot {SOT} --date {DATE}` must PASS (10 CG checks, including CG-010 dashboard). M4 is NEVER skippable — even in autopilot mode.
 - **Dashboard validation**: After dashboard generation, `python3 env-scanning/scripts/validate_dashboard.py --dashboard {path} --date {DATE}` (6 DB checks).
+- **Pipeline Gate 2 (all WFs)**: `python3 env-scanning/scripts/validate_phase2_output.py --sot {SOT} --workflow {wf} --date {DATE} --json` — 9 checks (PG2-001~009 including title_ko).
+- **Dashboard bilingual**: Dashboard now displays EN/KO bilingual signal titles and narrative subtabs. D3.js signal map in timeline tab requires CDN (offline fallback to markdown).
 - **Task Management**: `python3 env-scanning/core/master_task_manager.py --action init` generates task specs; `--action verify` post-checks completeness. LLM copies Python output verbatim.
 - **Report validation**: After generating any report, execute `python3 env-scanning/scripts/validate_report.py <report_path> --profile <profile>` and confirm exit code 0.
 - Validation profiles: `standard` (WF1/WF2), `naver` (WF3), `multiglobal-news` / `multiglobal-news_en` (WF4), `integrated`, `weekly`, `timeline` (Timeline Map).
