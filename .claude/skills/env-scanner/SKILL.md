@@ -131,6 +131,7 @@ Each workflow (WF1, WF2, WF3, WF4) follows the same 3-phase structure:
 **Full Quadruple Scan** (default): WF1 marathon → WF2 arXiv deep → WF3 Naver News → WF4 Multi&Global-News → Integrated report
 - 9 human checkpoints, top 20 signals in integrated report
 - WF1 scans 20+ sources; WF2 scans arXiv 30+ categories; WF3 crawls Naver 6 sections; WF4 crawls 43 global news sites across 11 languages
+- **Autopilot mode (v3.8.0)**: Each WF is invoked as a context-isolated sub-agent to prevent context exhaustion. Checkpoints are self-approved. `context_isolation_manager.py` (Python 원천봉쇄) generates deterministic sub-agent prompts and verifies results. Manual mode uses inline execution (pre-v3.8.0 behavior).
 
 **arXiv Standalone**: WF2 only, produces independent arXiv academic report
 - 2 human checkpoints, no integration

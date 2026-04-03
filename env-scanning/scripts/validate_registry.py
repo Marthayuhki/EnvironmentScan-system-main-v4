@@ -1798,6 +1798,24 @@ def validate_registry(registry_path: str) -> RegistryValidation:
         "; ".join(fin_errors) if fin_errors else ""
     ))
 
+    # ── SOT-067: context_isolation_script exists (v3.8.0) ──
+    # "Unvalidated SOT Is Not SOT" — context_isolation_manager.py enforces
+    # deterministic WF sub-agent invocation in autopilot mode (원천봉쇄).
+    # Without this script, autopilot mode falls back to inline execution,
+    # which risks context exhaustion and silent pipeline death.
+    ci_script = execution.get("context_isolation_script", "")
+    ci_errors = []
+    if not ci_script:
+        ci_errors.append("system.execution.context_isolation_script not defined")
+    elif not _file_exists(project_root, ci_script):
+        ci_errors.append(f"context_isolation_script not found: {ci_script}")
+    vr.results.append(CheckResult(
+        "SOT-067", "WARN",
+        "context_isolation_script exists (autopilot Python 원천봉쇄)",
+        len(ci_errors) == 0,
+        "; ".join(ci_errors) if ci_errors else ""
+    ))
+
     return vr
 
 

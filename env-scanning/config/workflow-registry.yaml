@@ -36,6 +36,7 @@ system:
     master_orchestrator: ".claude/agents/master-orchestrator.md"
     protocol: ".claude/agents/protocols/orchestrator-protocol.md"
     finalization_script: "env-scanning/core/master_finalization.py"  # v3.7.0: Python 원천봉쇄 — Step 5/6 atomic finalization
+    context_isolation_script: "env-scanning/core/context_isolation_manager.py"  # v3.8.0: Python 원천봉쇄 — Autopilot WF sub-agent isolation
 
   # ── Temporal Consistency (v2.2.0, 2026-02-10) ──
   # 모든 일일 스캐닝의 시간적 범위를 제어하는 글로벌 설정.
@@ -1013,6 +1014,12 @@ startup_validation:
       check: "priority_score_calculator_script_exists"
       description: "system.shared_engine.priority_score_calculator_script must exist — Step 2.3 Python 원천봉쇄"
       severity: "HALT"
+
+    # ── Context Isolation Manager (v3.8.0) ──
+    - id: "SOT-067"
+      check: "context_isolation_script_exists"
+      description: "system.execution.context_isolation_script must exist — autopilot WF sub-agent isolation Python 원천봉쇄"
+      severity: "WARN"
 
 # ================================================================
 # EXECUTION INTEGRITY (v1.0.0)

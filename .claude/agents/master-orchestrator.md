@@ -97,6 +97,58 @@ The ONLY difference in autopilot is that human approval checkpoints are auto-app
 2026-03-25 incident: autopilot mode caused narratives=0, cross_wf=0, risk_matrix=0, integration={},
 master_gates={} — all due to step abbreviation/skipping.
 
+## CRITICAL: Autopilot Context Isolation Protocol (v3.8.0)
+
+> **This rule is IMMUTABLE. Autopilot mode MUST use context-isolated sub-agents for WF execution.**
+
+**Problem (DEC-005)**: A single master-orchestrator agent executing 4 WFs inline exhausts its
+context window after ~2 WFs, silently killing the pipeline. Confirmed by 2026-04-03 incident:
+WF1+WF2 completed (262K tokens, 136 tool calls), WF3/WF4 never started.
+
+**Solution**: In autopilot mode, each WF is invoked as a context-isolated Agent sub-agent.
+The master-orchestrator stays lightweight (coordination only), each WF gets a fresh context.
+
+**Python 원천봉쇄**: All invocation decisions, parameter assembly, result verification, and
+status recording are handled by `context_isolation_manager.py` (SOT: `system.execution.context_isolation_script`).
+The LLM's role is reduced to: (1) determine execution_mode at Step 0, (2) run Python script,
+(3) read JSON output, (4) execute the prescribed Agent tool call.
+
+**Dual Execution Path**:
+
+| Mode | WF Invocation | Checkpoints | Determined By |
+|------|--------------|-------------|---------------|
+| **Autopilot** | Agent sub-agent (context-isolated) | Self-approved by sub-agent | `execution_mode: "autopilot"` in master-status.json |
+| **Manual** (default) | Inline (current behavior) | User-interactive | `execution_mode: "manual"` in master-status.json |
+
+**Per-WF invocation flow (autopilot)**:
+
+```
+1. python3 {CI_SCRIPT} --action generate-wf-invocation --wf {wf_key} --status-file {MASTER_STATUS_FILE} --registry {SOT_PATH}
+   → Reads output JSON: {"action": "INVOKE_SUBAGENT", "subagent_type": "...", "prompt": "..."}
+   
+2. IF action == "INVOKE_SUBAGENT":
+     → Agent(subagent_type=output.subagent_type, prompt=output.prompt, mode="auto")
+   ELIF action == "INVOKE_INLINE":
+     → Execute WF inline (current behavior — manual mode)
+   ELIF action == "ERROR":
+     → WARN log, fallback to inline execution
+
+3. python3 {CI_SCRIPT} --action complete-wf --wf {wf_key} --status-file {MASTER_STATUS_FILE} --registry {SOT_PATH}
+   → Reads output JSON: {"action": "PROCEED"} or {"action": "RETRY_FULL"} or {"action": "HALT"}
+   → Internally runs validate_completion.py (Python→Python, no LLM intermediation)
+   → Atomically updates master-status.json with WF results and gate status
+   
+4. IF action == "PROCEED": → next WF
+   ELIF action == "RETRY_FULL" or "RETRY_PHASE3": → re-invoke sub-agent (1 retry max)
+   ELIF action == "HALT": → stop and ask user
+```
+
+**Fallback**: If `context_isolation_manager.py` fails (exit code != 0), fall back to inline
+execution (pre-v3.8.0 behavior). The system is never worse than before this change.
+
+**9 Checkpoints preserved**: In autopilot, all 9 checkpoints exist structurally within
+sub-agents (self-approved). In manual mode, all 9 checkpoints are user-interactive (unchanged).
+
 ## Absolute Goal
 
 > **Primary Objective**: Produce a comprehensive, integrated environmental scanning report
@@ -221,6 +273,7 @@ All invocation blocks in Steps 1-6 reference these variables by name.
 | `BI_LANGUAGE` | (from bilingual config: `internal_language`) | `en` |
 | `TASK_MANAGER_SCRIPT` | `system.task_management.master_script` | `env-scanning/core/master_task_manager.py` |
 | `FINALIZATION_SCRIPT` | `system.execution.finalization_script` | `env-scanning/core/master_finalization.py` |
+| `CI_SCRIPT` | `system.execution.context_isolation_script` | `env-scanning/core/context_isolation_manager.py` |
 | `MASTER_STATUS_FILE` | (derived) | `{INT_OUTPUT_ROOT}/logs/master-status-{date}.json` |
 
 ### Step 0.2: Run Startup Validation
@@ -324,9 +377,11 @@ Create `{INT_OUTPUT_ROOT}/logs/master-status.json`:
   "master_id": "quadruple-scan-{date}",
   "system_name": "Quadruple Environmental Scanning System",
   "status": "initializing",
+  "execution_mode": "autopilot|manual",
   "registry_version": "{from SOT}",
   "started_at": "{ISO8601}",
   "scan_window_state_file": "{TC_STATE_FILE}",
+  "bilingual_config_file": "{BI_CONFIG_FILE}",
   "scan_window": "⚠️ READ FROM STATE FILE — DO NOT compute manually. Run: cat {TC_STATE_FILE}",
   "sot_validation": {
     "status": "PASS|HALT|WARN",
@@ -354,6 +409,13 @@ Create `{INT_OUTPUT_ROOT}/logs/master-status.json`:
   }
 }
 ```
+
+> **execution_mode determination (LLM 판단 — 1회만)**:
+> Determine from invocation context whether the user requested autopilot execution.
+> Keywords: "autopilot", "전자동", "자동", "auto-approve", "self-approve", "unattended".
+> If any match → `"autopilot"`. Otherwise → `"manual"` (default).
+> This is the ONLY LLM judgment in the Context Isolation Protocol.
+> Once written to master-status.json, all subsequent decisions are Python-driven.
 
 ### Step 0.4: Create Master Task Hierarchy (Python — Deterministic)
 
@@ -555,89 +617,101 @@ Before invoking the WF1 orchestrator:
 - Verify `WF1_DATA_ROOT` directory exists
 - Verify arXiv is `enabled: false` in `WF1_SOURCES` (SOT-010 should have caught this, but defense-in-depth)
 
-### 1.2 Invoke WF1 Orchestrator
+### 1.2 Invoke WF1 Orchestrator (Context Isolation — v3.8.0)
 
-Pass these parameters to `env-scan-orchestrator`.
-**ALL values MUST come from the named variables defined in Step 0.1**:
+> **할루시네이션 원천봉쇄**: WF 호출 방식 결정, 파라미터 조립, sub-agent 프롬프트 생성은
+> 모두 Python이 수행합니다. LLM은 Python 출력을 읽고 Agent tool call을 실행만 합니다.
+
+**Step A — Python 결정 엔진 (MANDATORY)**:
+
+```bash
+python3 {CI_SCRIPT} --action generate-wf-invocation --wf wf1-general \
+  --status-file {MASTER_STATUS_FILE} --registry {SOT_PATH}
+```
+
+**Interpretation and Execution** (LLM은 아래 절차를 그대로 실행한다):
+
+**Case "INVOKE_SUBAGENT"** (autopilot mode):
+```
+1. Parse JSON output → subagent_type, prompt 추출
+2. Agent(subagent_type=output.subagent_type, prompt=output.prompt, mode="auto")
+3. Wait for sub-agent completion → sub-agent returns summary text
+```
+
+**Case "INVOKE_INLINE"** (manual mode — current behavior):
+```
+1. Execute WF1 inline using the invocation parameters below
+2. WF1 manages its own checkpoints interactively (Step 2.5, Step 3.4)
+```
+
+**Case "ERROR"** (script failure):
+```
+1. WARN log: "Context isolation script failed — falling back to inline"
+2. Execute WF1 inline (same as INVOKE_INLINE)
+```
+
+**Inline invocation parameters** (used for INVOKE_INLINE and ERROR fallback):
+ALL values MUST come from the named variables defined in Step 0.1:
 
 ```yaml
 invocation:
   data_root: WF1_DATA_ROOT
   sources_config: WF1_SOURCES
-  validate_profile: WF1_PROFILE        # ⚠️ EN-first 모드 시 "standard_en" (Step 0.2.6에서 오버라이드됨)
+  validate_profile: WF1_PROFILE
   date: "{today_date}"
   protocol: PROTOCOL
   shared_invariants:
-    report_skeleton: REPORT_SKELETON    # ⚠️ EN-first 모드 시 EN 스켈레톤 (Step 0.2.6에서 오버라이드됨)
+    report_skeleton: REPORT_SKELETON
     domains: DOMAINS_CONFIG
     thresholds: THRESHOLDS_CONFIG
-  # ── 시간적 일관성 (Python 강제 — v2.2.1) ──
-  # 모든 시간 파라미터는 temporal_anchor.py가 생성한 상태 파일에서 읽습니다.
-  # LLM이 datetime 산술을 수행하지 않습니다.
   scan_window_state_file: "{TC_STATE_FILE}"
-  scan_window_workflow: "wf1-general"  # 상태 파일에서 이 WF의 윈도우를 참조
+  scan_window_workflow: "wf1-general"
   temporal_gate_script: "{TC_GATE_SCRIPT}"
   metadata_injector_script: "{TC_INJECTOR_SCRIPT}"
   statistics_engine_script: "{TC_STATISTICS_SCRIPT}"
-  # ── 이중언어 라우팅 (Python 결정론 — v2.8.0) ──
-  # bilingual_resolver.py가 결정한 라우팅 파라미터를 전달합니다.
   bilingual_config_file: "{BI_CONFIG_FILE}"
-  bilingual_language: "{BI_LANGUAGE}"   # "en" or "ko" — for --language flags
+  bilingual_language: "{BI_LANGUAGE}"
 ```
 
-### 1.3 Wait for WF1 Completion
+### 1.3 Complete WF1 (Python 원천봉쇄 — Verify + Record + Gate)
 
-WF1 runs its full 3-phase pipeline internally:
-- Phase 1: Research (scan, dedup, optional checkpoint)
-- Phase 2: Planning (classify, impact, priority, **required checkpoint 2.5**)
-- Phase 3: Implementation (DB update, report, archive, **required checkpoint 3.4**)
+> **할루시네이션 원천봉쇄**: WF 결과 검증, gate 실행 (validate_completion.py subprocess),
+> 복구 결정, master-status.json 업데이트는 모두 Python이 원자적으로 수행합니다.
+> LLM은 Python 출력의 "action" 필드만 읽고 따릅니다.
 
-The master orchestrator waits. WF1 manages its own checkpoints.
+**Step B — Python 통합 검증 (MANDATORY)**:
 
-### 1.4 Record WF1 Result
-
-On WF1 completion:
-```json
-{
-  "wf1-general": {
-    "status": "completed|failed",
-    "report_path": "{WF1_DATA_ROOT}/reports/daily/environmental-scan-{date}.md",
-    "signal_count": N,
-    "completed_at": "{ISO8601}",
-    "verification_summary": { "passed": X, "warned": Y, "failed": Z }
-  }
-}
+```bash
+python3 {CI_SCRIPT} --action complete-wf --wf wf1-general \
+  --status-file {MASTER_STATUS_FILE} --registry {SOT_PATH}
 ```
 
----
+**Interpretation**:
 
-## Master Gate M1: WF1 → WF2 Transition
-
-```yaml
-Master_Gate_M1:
-  trigger: After WF1 orchestrator returns
-  enforcement: MANDATORY  # Python 원천봉쇄 — LLM 판단이 아닌 Python 검증
-  script: "python3 env-scanning/scripts/validate_completion.py --sot {SOT_PATH} --date {SCAN_DATE} --workflow-only wf1-general --json"
-  checks:
-    - wf1_status_completed: "WF1 workflow-status.json shows status: completed"
-    - wf1_report_exists: "WF1 daily report file exists at expected path"
-    - wf1_report_valid: "WF1 report passes structural check (sections present)"
-    - wf1_gate3_passed: "WF1 Pipeline Gate 3 passed (from verification report)"
-    - wf1_human_approvals: "Both Step 2.5 and Step 3.4 human approvals recorded"
-    - wf1_completion_gate: "validate_completion.py --workflow-only wf1-general returns exit code 0"
-  on_fail:
-    action: HALT_and_ask_user
-    message: |
-      WF1이 정상 완료되지 않았습니다.
-      실패 항목: {failing_checks}
-      선택지:
-        1. WF1 재실행
-        2. WF1 건너뛰고 WF2+WF3+WF4 계속 실행 (WF2+WF3+WF4 통합 보고서 생성 — degraded mode)
-        3. 전체 워크플로우 중단
+**Case "PROCEED"**:
+```
+→ Gate M1 PASS. master-status.json already updated atomically by Python.
+→ Proceed to WF2.
 ```
 
-> **Python 강제**: M1 gate에서 `validate_completion.py --workflow-only wf1-general`을 실행한다.
-> exit code 0이 아니면 WF1은 미완료 상태이며, 다음 단계(WF2)로 진행할 수 없다.
+**Case "RETRY_FULL"** or **"RETRY_PHASE3"**:
+```
+→ Re-invoke WF1 (Step 1.2 from the beginning, max 1 retry)
+→ After retry, run complete-wf again
+```
+
+**Case "HALT"**:
+```
+→ All retries exhausted. Present to user:
+  WF1이 정상 완료되지 않았습니다.
+  선택지:
+    1. WF1 재실행
+    2. WF1 건너뛰고 WF2+WF3+WF4 계속 실행 (degraded mode)
+    3. 전체 워크플로우 중단
+```
+
+> **Note**: In INVOKE_INLINE mode, Step 1.3 still runs the same `complete-wf` Python script.
+> The script checks disk state and runs validate_completion.py regardless of invocation mode.
 
 **IMPORTANT**: If WF1 fails and user chooses to skip, the integrated report
 will be generated from WF2+WF3+WF4 only (degraded mode). See Degraded Mode table.
@@ -662,86 +736,55 @@ Before invoking the WF2 orchestrator:
 - Verify `WF2_DATA_ROOT` directory exists
 - Verify arXiv is `enabled: true` and `critical: true` in `WF2_SOURCES`
 
-### 2.2 Invoke WF2 Orchestrator
+### 2.2 Invoke WF2 Orchestrator (Context Isolation — v3.8.0)
 
-Pass these parameters to `arxiv-scan-orchestrator`.
-**ALL values MUST come from the named variables defined in Step 0.1**:
+> **할루시네이션 원천봉쇄**: Same pattern as Step 1.2. Python decides, LLM executes.
+
+**Step A — Python 결정 엔진 (MANDATORY)**:
+
+```bash
+python3 {CI_SCRIPT} --action generate-wf-invocation --wf wf2-arxiv \
+  --status-file {MASTER_STATUS_FILE} --registry {SOT_PATH}
+```
+
+Follow the same Case interpretation as Step 1.2 (INVOKE_SUBAGENT / INVOKE_INLINE / ERROR).
+
+**Inline invocation parameters** (used for INVOKE_INLINE and ERROR fallback):
 
 ```yaml
 invocation:
   data_root: WF2_DATA_ROOT
   sources_config: WF2_SOURCES
-  validate_profile: WF2_PROFILE        # ⚠️ EN-first 모드 시 "standard_en" (Step 0.2.6에서 오버라이드됨)
+  validate_profile: WF2_PROFILE
   date: "{today_date}"
-  execution_mode: "integrated"    # Tells WF2 to skip top-level wrapper task creation
+  execution_mode: "integrated"
   protocol: PROTOCOL
   shared_invariants:
-    report_skeleton: REPORT_SKELETON    # ⚠️ EN-first 모드 시 EN 스켈레톤 (Step 0.2.6에서 오버라이드됨)
+    report_skeleton: REPORT_SKELETON
     domains: DOMAINS_CONFIG
     thresholds: THRESHOLDS_CONFIG
   parameters:
-    days_back: WF2_DAYS_BACK          # DEPRECATED — scan_window.lookback_hours 사용 권장
+    days_back: WF2_DAYS_BACK
     max_results_per_category: WF2_MAX_RESULTS
     extended_categories: WF2_EXTENDED_CATS
-  # ── 시간적 일관성 (Python 강제 — v2.2.1) ──
   scan_window_state_file: "{TC_STATE_FILE}"
   scan_window_workflow: "wf2-arxiv"
   temporal_gate_script: "{TC_GATE_SCRIPT}"
   metadata_injector_script: "{TC_INJECTOR_SCRIPT}"
   statistics_engine_script: "{TC_STATISTICS_SCRIPT}"
-  # ── 이중언어 라우팅 (Python 결정론 — v2.8.0) ──
   bilingual_config_file: "{BI_CONFIG_FILE}"
   bilingual_language: "{BI_LANGUAGE}"
 ```
 
-### 2.3 Wait for WF2 Completion
+### 2.3 Complete WF2 (Python 원천봉쇄 — Verify + Record + Gate)
 
-WF2 runs its full 3-phase pipeline internally (same structure as WF1):
-- Phase 1: Research (arXiv deep scan, dedup, optional checkpoint)
-- Phase 2: Planning (classify, impact, priority, **required checkpoint 2.5**)
-- Phase 3: Implementation (DB update, report, archive, **required checkpoint 3.4**)
-
-### 2.4 Record WF2 Result
-
-On WF2 completion:
-```json
-{
-  "wf2-arxiv": {
-    "status": "completed|failed",
-    "report_path": "{WF2_DATA_ROOT}/reports/daily/environmental-scan-{date}.md",
-    "signal_count": N,
-    "completed_at": "{ISO8601}",
-    "verification_summary": { "passed": X, "warned": Y, "failed": Z }
-  }
-}
+```bash
+python3 {CI_SCRIPT} --action complete-wf --wf wf2-arxiv \
+  --status-file {MASTER_STATUS_FILE} --registry {SOT_PATH}
 ```
 
----
-
-## Master Gate M2: WF2 → WF3 Transition
-
-```yaml
-Master_Gate_M2:
-  trigger: After WF2 orchestrator returns
-  enforcement: MANDATORY  # Python 원천봉쇄
-  script: "python3 env-scanning/scripts/validate_completion.py --sot {SOT_PATH} --date {SCAN_DATE} --workflow-only wf2-arxiv --json"
-  checks:
-    - wf2_status_completed: "WF2 workflow-status.json shows status: completed"
-    - wf2_report_exists: "WF2 daily report file exists at expected path"
-    - wf2_report_valid: "WF2 report passes structural check (sections present)"
-    - wf2_gate3_passed: "WF2 Pipeline Gate 3 passed (from verification report)"
-    - wf2_human_approvals: "Both Step 2.5 and Step 3.4 human approvals recorded"
-    - wf2_completion_gate: "validate_completion.py --workflow-only wf2-arxiv returns exit code 0"
-  on_fail:
-    action: HALT_and_ask_user
-    message: |
-      WF2가 정상 완료되지 않았습니다.
-      실패 항목: {failing_checks}
-      선택지:
-        1. WF2 재실행
-        2. WF2 건너뛰고 WF3+WF4 진행 (WF2 없이 통합 보고서 제한적 생성)
-        3. 전체 워크플로우 중단
-```
+Follow the same Case interpretation as Step 1.3 (PROCEED / RETRY / HALT).
+On HALT, present degraded mode option: skip WF2 and continue with WF3+WF4.
 
 > **Python 강제**: M2 gate에서 `validate_completion.py --workflow-only wf2-arxiv`를 실행한다.
 
@@ -765,10 +808,20 @@ Before invoking the WF3 orchestrator:
 - Verify `WF3_DATA_ROOT` directory exists
 - Verify NaverNews is `enabled: true` in `WF3_SOURCES`
 
-### 3.2 Invoke WF3 Orchestrator
+### 3.2 Invoke WF3 Orchestrator (Context Isolation — v3.8.0)
 
-Pass these parameters to `naver-scan-orchestrator`.
-**ALL values MUST come from the named variables defined in Step 0.1**:
+> **할루시네이션 원천봉쇄**: Same pattern as Step 1.2. Python decides, LLM executes.
+
+**Step A — Python 결정 엔진 (MANDATORY)**:
+
+```bash
+python3 {CI_SCRIPT} --action generate-wf-invocation --wf wf3-naver \
+  --status-file {MASTER_STATUS_FILE} --registry {SOT_PATH}
+```
+
+Follow the same Case interpretation as Step 1.2 (INVOKE_SUBAGENT / INVOKE_INLINE / ERROR).
+
+**Inline invocation parameters** (used for INVOKE_INLINE and ERROR fallback):
 
 ```yaml
 invocation:
@@ -776,7 +829,7 @@ invocation:
   sources_config: WF3_SOURCES
   validate_profile: WF3_PROFILE
   date: "{today_date}"
-  execution_mode: "integrated"    # Tells WF3 to skip top-level wrapper task creation
+  execution_mode: "integrated"
   protocol: PROTOCOL
   shared_invariants:
     report_skeleton: WF3_SKELETON
@@ -787,72 +840,24 @@ invocation:
     three_horizons_tagging: WF3_HORIZONS
     tipping_point_detection: WF3_TIPPING
     anomaly_detection: WF3_ANOMALY
-  # ── 시간적 일관성 (Python 강제 — v2.2.1) ──
   scan_window_state_file: "{TC_STATE_FILE}"
   scan_window_workflow: "wf3-naver"
   temporal_gate_script: "{TC_GATE_SCRIPT}"
   metadata_injector_script: "{TC_INJECTOR_SCRIPT}"
   statistics_engine_script: "{TC_STATISTICS_SCRIPT}"
-  # ── 이중언어 라우팅 (Python 결정론 — v2.8.0) ──
   bilingual_config_file: "{BI_CONFIG_FILE}"
-  bilingual_language: "{BI_LANGUAGE}"   # "en" or "ko" — for --language flags
+  bilingual_language: "{BI_LANGUAGE}"
 ```
 
-### 3.3 Wait for WF3 Completion
+### 3.3 Complete WF3 (Python 원천봉쇄 — Verify + Record + Gate)
 
-WF3 runs its full 3-phase pipeline internally:
-- Phase 1: Research (Naver crawl, dedup, optional checkpoint)
-- Phase 2: Planning (STEEPs + FSSF classify, impact + tipping point, priority, **required checkpoint 2.5**)
-- Phase 3: Implementation (DB update, report, archive + alerts, **required checkpoint 3.4**)
-
-### 3.4 Record WF3 Result
-
-On WF3 completion:
-```json
-{
-  "wf3-naver": {
-    "status": "completed|failed",
-    "report_path": "{WF3_DATA_ROOT}/reports/daily/environmental-scan-{date}.md",
-    "signal_count": N,
-    "completed_at": "{ISO8601}",
-    "fssf_distribution": { "Weak Signal": X, "Trend": Y, ... },
-    "tipping_alerts": { "RED": 0, "ORANGE": 1, "YELLOW": 2 },
-    "verification_summary": { "passed": X, "warned": Y, "failed": Z }
-  }
-}
+```bash
+python3 {CI_SCRIPT} --action complete-wf --wf wf3-naver \
+  --status-file {MASTER_STATUS_FILE} --registry {SOT_PATH}
 ```
 
----
-
-## Master Gate M2a: WF3 → WF4 Transition
-
-```yaml
-Master_Gate_M2a:
-  trigger: After WF3 orchestrator returns
-  enforcement: MANDATORY  # Python 원천봉쇄
-  script: "python3 env-scanning/scripts/validate_completion.py --sot {SOT_PATH} --date {SCAN_DATE} --workflow-only wf3-naver --json"
-  checks:
-    - wf3_status_completed: "WF3 workflow-status.json shows status: completed"
-    - wf3_report_exists: "WF3 daily report file exists at expected path"
-    - wf3_report_valid: "WF3 report passes structural check (sections present)"
-    - wf3_gate3_passed: "WF3 Pipeline Gate 3 passed (from verification report)"
-    - wf3_human_approvals: "Both Step 2.5 and Step 3.4 human approvals recorded"
-    - wf3_completion_gate: "validate_completion.py --workflow-only wf3-naver returns exit code 0"
-  on_fail:
-    action: HALT_and_ask_user
-    message: |
-      WF3가 정상 완료되지 않았습니다.
-      실패 항목: {failing_checks}
-      선택지:
-        1. WF3 재실행
-        2. WF3 건너뛰고 WF4 진행 (WF3 없이 통합 보고서 제한적 생성)
-        3. 전체 워크플로우 중단
-```
-
-> **Python 강제**: M2a gate에서 `validate_completion.py --workflow-only wf3-naver`를 실행한다.
-
-**IMPORTANT**: If WF3 fails and user chooses to skip, the integrated report
-will be generated from WF1+WF2+WF4 only (degraded mode).
+Follow the same Case interpretation as Step 1.3 (PROCEED / RETRY / HALT).
+On HALT, present degraded mode option: skip WF3 and continue with WF4.
 
 **Task Completion (Python 원천봉쇄)**: After M2a PASS:
 ```bash
@@ -874,10 +879,20 @@ Before invoking the WF4 orchestrator:
 - Verify `WF4_DATA_ROOT` directory exists
 - Verify WF4 is `enabled: true` in SOT (`WF4_ENABLED`)
 
-### 4.2 Invoke WF4 Orchestrator
+### 4.2 Invoke WF4 Orchestrator (Context Isolation — v3.8.0)
 
-Pass these parameters to `multiglobal-news-scan-orchestrator`.
-**ALL values MUST come from the named variables defined in Step 0.1**:
+> **할루시네이션 원천봉쇄**: Same pattern as Step 1.2. Python decides, LLM executes.
+
+**Step A — Python 결정 엔진 (MANDATORY)**:
+
+```bash
+python3 {CI_SCRIPT} --action generate-wf-invocation --wf wf4-multiglobal-news \
+  --status-file {MASTER_STATUS_FILE} --registry {SOT_PATH}
+```
+
+Follow the same Case interpretation as Step 1.2 (INVOKE_SUBAGENT / INVOKE_INLINE / ERROR).
+
+**Inline invocation parameters** (used for INVOKE_INLINE and ERROR fallback):
 
 ```yaml
 invocation:
@@ -885,75 +900,30 @@ invocation:
   sources_config: WF4_SOURCES
   validate_profile: WF4_PROFILE
   date: "{today_date}"
-  execution_mode: "integrated"    # Tells WF4 to skip top-level wrapper task creation
+  execution_mode: "integrated"
   protocol: PROTOCOL
   shared_invariants:
     report_skeleton: WF4_SKELETON
     domains: DOMAINS_CONFIG
     thresholds: THRESHOLDS_CONFIG
-  # -- Temporal consistency (Python enforcement -- v2.2.1) --
   scan_window_state_file: "{TC_STATE_FILE}"
   scan_window_workflow: "wf4-multiglobal-news"
   temporal_gate_script: "{TC_GATE_SCRIPT}"
   metadata_injector_script: "{TC_INJECTOR_SCRIPT}"
   statistics_engine_script: "{TC_STATISTICS_SCRIPT}"
-  # -- Bilingual routing (Python determinism -- v2.8.0) --
   bilingual_config_file: "{BI_CONFIG_FILE}"
-  bilingual_language: "{BI_LANGUAGE}"   # "en" or "ko" -- for --language flags
+  bilingual_language: "{BI_LANGUAGE}"
 ```
 
-### 4.3 Wait for WF4 Completion
+### 4.3 Complete WF4 (Python 원천봉쇄 — Verify + Record + Gate)
 
-WF4 runs its full 3-phase pipeline internally:
-- Phase 1: Research (multi/global news scan, dedup, optional checkpoint)
-- Phase 2: Planning (STEEPs classify, impact, priority, **required checkpoint 2.5**)
-- Phase 3: Implementation (DB update, report, archive, **required checkpoint 3.4**)
-
-### 4.4 Record WF4 Result
-
-On WF4 completion:
-```json
-{
-  "wf4-multiglobal-news": {
-    "status": "completed|failed",
-    "report_path": "{WF4_DATA_ROOT}/reports/daily/environmental-scan-{date}.md",
-    "signal_count": N,
-    "completed_at": "{ISO8601}",
-    "verification_summary": { "passed": X, "warned": Y, "failed": Z }
-  }
-}
+```bash
+python3 {CI_SCRIPT} --action complete-wf --wf wf4-multiglobal-news \
+  --status-file {MASTER_STATUS_FILE} --registry {SOT_PATH}
 ```
 
----
-
-## Master Gate M2b: WF4 → Integration Transition
-
-```yaml
-Master_Gate_M2b:
-  trigger: After WF4 orchestrator returns
-  enforcement: MANDATORY  # Python 원천봉쇄
-  script: "python3 env-scanning/scripts/validate_completion.py --sot {SOT_PATH} --date {SCAN_DATE} --workflow-only wf4-multiglobal-news --json"
-  checks:
-    - wf4_status_completed: "WF4 workflow-status.json shows status: completed"
-    - wf4_report_exists: "WF4 daily report file exists at expected path"
-    - wf4_report_valid: "WF4 report passes structural check (sections present)"
-    - wf4_pipeline_gate_3_passed: "WF4 Pipeline Gate 3 passed (from verification report)"
-    - wf4_human_approvals_recorded: "Both Step 2.5 and Step 3.4 human approvals recorded"
-    - wf4_completion_gate: "validate_completion.py --workflow-only wf4-multiglobal-news returns exit code 0"
-    - all_workflows_completed: "WF1, WF2, WF3, and WF4 all show status: completed (or explicitly skipped)"
-  on_fail:
-    action: HALT_and_ask_user
-    message: |
-      WF4가 정상 완료되지 않았습니다.
-      실패 항목: {failing_checks}
-      선택지:
-        1. WF4 재실행
-        2. WF4 건너뛰고 WF1+WF2+WF3 통합 보고서만 생성
-        3. 전체 워크플로우 중단
-```
-
-**IMPORTANT**: If WF4 fails and user chooses to skip, the integrated report
-will be generated from WF1+WF2+WF3 only (degraded mode).
+Follow the same Case interpretation as Step 1.3 (PROCEED / RETRY / HALT).
+On HALT, present degraded mode option: skip WF4 and generate WF1+WF2+WF3 integrated report only.
 
 **Task Completion (Python 원천봉쇄)**: After M2b PASS:
 ```bash
