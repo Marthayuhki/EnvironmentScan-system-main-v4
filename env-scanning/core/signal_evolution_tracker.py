@@ -405,7 +405,7 @@ def compute_thread_state(
     # TRANSFORMED: medium confidence + category change
     if confidence == "MEDIUM":
         prev_category = thread.get("primary_category", "")
-        curr_category = new_signal.get("final_category", new_signal.get("preliminary_category", ""))
+        curr_category = new_signal.get("category") or new_signal.get("steeps") or new_signal.get("final_category") or new_signal.get("preliminary_category", "")
         if prev_category and curr_category and prev_category != curr_category:
             return "TRANSFORMED"
 
@@ -770,7 +770,7 @@ def track_signal_evolution(
         signal_id = signal.get("id", "")
         # L1 fix (v1.3.0): Multi-layer title enrichment — never empty
         signal_title = _enrich_signal_title(signal, signals_db_list)
-        signal_category = signal.get("final_category", signal.get("preliminary_category", ""))
+        signal_category = signal.get("category") or signal.get("steeps") or signal.get("final_category") or signal.get("preliminary_category", "")
         # L3 fix (v1.3.0): pSST backfill from priority-ranked
         signal_psst = signal.get("psst_score")
         if signal_psst is None or signal_psst == 0:

@@ -218,6 +218,51 @@ system:
     validate_script: "env-scanning/scripts/validate_report.py"
     validate_registry_script: "env-scanning/scripts/validate_registry.py"
     priority_score_calculator_script: "env-scanning/core/priority_score_calculator.py"  # v3.5.0: Step 2.3 Python 원천봉쇄
+    validate_phase2_output_script: "env-scanning/scripts/validate_phase2_output.py"    # Pipeline Gate 2
+    normalize_phase2_output_script: "env-scanning/core/normalize_phase2_output.py"     # v3.9.0: Field name 원천봉쇄
+    run_phase2_pipeline_script: "env-scanning/core/run_phase2_pipeline.py"             # v3.9.0: Step 2.3~PG2 연쇄 원천봉쇄
+    finalize_dashboard_script: "env-scanning/core/finalize_dashboard.py"               # v3.9.0: Dashboard pipeline 원천봉쇄
+
+  # ── Phase 2 Output Schema (v3.9.0: Canonical schema for ALL workflows) ──
+  # All 4 workflows MUST produce classified-signals and priority-ranked
+  # JSON files conforming to this schema. This ensures Python 원천봉쇄
+  # consistency across WF1/WF2/WF3/WF4 and enables uniform downstream
+  # consumption by dashboard, statistics, evolution tracker, and reports.
+  phase2_output_schema:
+    # classified-signals-{date}.json — output of Phase 2.1+2.2 (LLM classification)
+    classified_signals:
+      root_key: "signals"                # Array of signal objects
+      required_fields:
+        - "id"                           # Signal ID (format per WF: ws-, arxiv-, naver-, news-)
+        - "title"                        # English title
+        - "title_ko"                     # Korean title (PG2-009 enforced)
+        - "category"                     # STEEPs code: S, T, E, Env, P, s
+        - "source"                       # Source info (string or object)
+      optional_fields:
+        - "fssf_type"                    # WF3/WF4 only: FSSF 8-type
+        - "three_horizons"               # WF3/WF4 only: H1/H2/H3
+        - "psst_dimensions"              # LLM-assigned: ES, CC, IC (0-100)
+        - "secondary_steeps"             # Additional STEEPs categories
+        - "keywords"                     # Keyword list for cross-WF matching
+      category_format: "single_code"     # "S", "T", "E", "Env", "P", "s" — NOT "E_Economic"
+
+    # priority-ranked-{date}.json — output of Phase 2.3 (Python 원천봉쇄)
+    priority_ranked:
+      root_key: "ranked_signals"         # MANDATORY key name (not "signals")
+      metadata_key: "ranking_metadata"   # Engine metadata
+      required_fields:
+        - "rank"                         # int: 1-based rank
+        - "id"                           # Signal ID (matches classified)
+        - "title"                        # English title
+        - "priority_score"               # float: weighted composite (Python-computed)
+        - "psst_score"                   # float: 0-100 pSST score (Python-computed)
+        - "psst_grade"                   # str: A/B/C/D grade (Python-computed)
+        - "component_scores"             # dict: impact/probability/urgency/novelty (Python-computed)
+        - "psst_dimensions"              # dict: SR/TC/DC/ES/CC/IC (Python-computed)
+      score_scale:
+        priority_score: [1.0, 5.0]       # Weighted composite range
+        psst_score: [0, 100]             # pSST percentage
+        component_scores: [1.0, 5.0]     # Per-component range
 
   # ── Shared Worker Agents (invoked by both orchestrators, unmodified) ──
   shared_workers:
@@ -1020,6 +1065,18 @@ startup_validation:
       check: "context_isolation_script_exists"
       description: "system.execution.context_isolation_script must exist — autopilot WF sub-agent isolation Python 원천봉쇄"
       severity: "WARN"
+
+    # ── Phase 2 Output Schema (v3.9.0) ──
+    - id: "SOT-068"
+      check: "phase2_output_schema_valid"
+      description: "system.phase2_output_schema must define canonical classified-signals and priority-ranked schemas — ensures Python 원천봉쇄 uniformity across all 4 WFs"
+      severity: "HALT"
+
+    # ── Hallucination 원천봉쇄 Pipeline Scripts (v3.9.0) ──
+    - id: "SOT-069"
+      check: "hallucination_pipeline_scripts_exist"
+      description: "normalize_phase2_output, run_phase2_pipeline, finalize_dashboard scripts must exist — LLM 할루시네이션 원천봉쇄"
+      severity: "HALT"
 
 # ================================================================
 # EXECUTION INTEGRITY (v1.0.0)

@@ -1816,6 +1816,59 @@ def validate_registry(registry_path: str) -> RegistryValidation:
         "; ".join(ci_errors) if ci_errors else ""
     ))
 
+    # ── SOT-068: phase2_output_schema section valid (v3.9.0) ──
+    # Ensures the canonical Phase 2 output schema is declared in SOT,
+    # so all 4 workflows produce uniform classified-signals and
+    # priority-ranked JSON for downstream consumers (dashboard, stats, etc.).
+    schema = system.get("phase2_output_schema", {})
+    schema_errors = []
+    cs = schema.get("classified_signals", {})
+    pr = schema.get("priority_ranked", {})
+    if not cs:
+        schema_errors.append("phase2_output_schema.classified_signals not defined")
+    else:
+        if not cs.get("root_key"):
+            schema_errors.append("classified_signals.root_key not defined")
+        if not cs.get("required_fields"):
+            schema_errors.append("classified_signals.required_fields empty or missing")
+        elif "category" not in cs.get("required_fields", []):
+            schema_errors.append("classified_signals.required_fields must include 'category'")
+    if not pr:
+        schema_errors.append("phase2_output_schema.priority_ranked not defined")
+    else:
+        if pr.get("root_key") != "ranked_signals":
+            schema_errors.append(f"priority_ranked.root_key must be 'ranked_signals', got '{pr.get('root_key')}'")
+        if not pr.get("required_fields"):
+            schema_errors.append("priority_ranked.required_fields empty or missing")
+        elif "psst_score" not in pr.get("required_fields", []):
+            schema_errors.append("priority_ranked.required_fields must include 'psst_score'")
+    vr.results.append(CheckResult(
+        "SOT-068", "HALT",
+        "phase2_output_schema valid (v3.9.0 — canonical Phase 2 output schema for all WFs)",
+        len(schema_errors) == 0,
+        "; ".join(schema_errors) if schema_errors else ""
+    ))
+
+    # ── SOT-069: hallucination 원천봉쇄 pipeline scripts exist (v3.9.0) ──
+    pipeline_scripts = {
+        "normalize_phase2_output_script": "Field name normalizer",
+        "run_phase2_pipeline_script": "Phase 2 pipeline runner",
+        "finalize_dashboard_script": "Dashboard finalization pipeline",
+    }
+    pipe_errors = []
+    for key, desc in pipeline_scripts.items():
+        script_path = shared_engine.get(key, "")
+        if not script_path:
+            pipe_errors.append(f"{key} not defined in SOT")
+        elif not _file_exists(project_root, script_path):
+            pipe_errors.append(f"{desc} not found: {script_path}")
+    vr.results.append(CheckResult(
+        "SOT-069", "HALT",
+        "hallucination 원천봉쇄 pipeline scripts exist (v3.9.0)",
+        len(pipe_errors) == 0,
+        "; ".join(pipe_errors) if pipe_errors else ""
+    ))
+
     return vr
 
 

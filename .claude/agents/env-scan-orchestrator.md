@@ -2742,6 +2742,12 @@ Pre-Verification Checks:
 
 #### ② EXECUTE (Python 원천봉쇄)
 
+> **v3.9.0 MANDATORY**: This step MUST be executed via `priority_score_calculator.py` for ALL
+> workflows (WF1, WF2, WF3, WF4). The LLM MUST NOT produce `priority-ranked-{date}.json` directly.
+> The output uses `ranked_signals` key (not `signals`), numeric `psst_score`/`psst_grade`
+> (not text like "CRITICAL"/"HIGH"), as defined in `phase2_output_schema.priority_ranked` in SOT.
+> LLM-produced ranking files will FAIL Pipeline Gate 2 validation (PG2-010~012).
+
 **Worker**: `priority_score_calculator.py` — deterministic priority scoring (no LLM hallucination on formulas).
 Reads classified-signals + impact-assessment → computes weighted scores → writes priority-ranked.
 

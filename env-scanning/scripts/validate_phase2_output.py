@@ -511,6 +511,70 @@ def validate_phase2_output(
             classified_path, classified_data))
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # PG2-010: Ranked Output Key — Must use "ranked_signals" (v3.9.0)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    pg010_pass = True
+    pg010_detail = ""
+    if ranked_data is not None:
+        has_canonical_key = "ranked_signals" in ranked_data
+        has_legacy_key = "signals" in ranked_data and "ranked_signals" not in ranked_data
+        if has_legacy_key:
+            pg010_pass = False
+            pg010_detail = (
+                f"priority-ranked uses legacy 'signals' key instead of canonical "
+                f"'ranked_signals'. This indicates priority_score_calculator.py was NOT "
+                f"used (Python 원천봉쇄 bypass). Re-run Step 2.3 with the Python calculator."
+            )
+        elif not has_canonical_key:
+            pg010_pass = False
+            pg010_detail = "Neither 'ranked_signals' nor 'signals' key found in ranked file"
+    checks.append({
+        "id": "PG2-010",
+        "description": "Ranked output uses canonical 'ranked_signals' key (v3.9.0)",
+        "passed": pg010_pass,
+        "severity": "CRITICAL",
+        "detail": pg010_detail,
+    })
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # PG2-011: pSST Score Presence — All ranked signals must have psst_score (v3.9.0)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    missing_psst = []
+    if ranked_signals is not None:
+        for sig in ranked_signals:
+            psst = sig.get("psst_score")
+            if psst is None or not isinstance(psst, (int, float)):
+                missing_psst.append(sig.get("id", "?"))
+    checks.append({
+        "id": "PG2-011",
+        "description": "All ranked signals have numeric psst_score (Python 원천봉쇄)",
+        "passed": len(missing_psst) == 0,
+        "severity": "CRITICAL",
+        "detail": _violation_detail(missing_psst, len(ranked_signals) if ranked_signals else 0,
+                                     "signals missing numeric psst_score") if missing_psst else "",
+    })
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # PG2-012: Category Field in Classified — Must use 'category' (single code) (v3.9.0)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    non_standard_cat = []
+    if classified_signals is not None:
+        for sig in classified_signals:
+            cat = sig.get("category")
+            steeps_legacy = sig.get("steeps")
+            if cat is None and steeps_legacy is not None:
+                non_standard_cat.append(f"{sig.get('id', '?')}: uses 'steeps' instead of 'category'")
+            elif cat is not None and "_" in str(cat):
+                non_standard_cat.append(f"{sig.get('id', '?')}: category='{cat}' (should be single code)")
+    checks.append({
+        "id": "PG2-012",
+        "description": "Classified signals use 'category' field with single-code format (v3.9.0)",
+        "passed": len(non_standard_cat) == 0,
+        "severity": "WARN",
+        "detail": "; ".join(non_standard_cat[:5]) + (f" ... (+{len(non_standard_cat)-5})" if len(non_standard_cat) > 5 else "") if non_standard_cat else "",
+    })
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # Compute Summary
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     critical_fails = sum(

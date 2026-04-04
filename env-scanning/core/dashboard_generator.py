@@ -210,8 +210,10 @@ def load_report_file(path: Path) -> str:
 # Markdown-to-HTML Converter
 # ---------------------------------------------------------------------------
 
-def _esc(text: str) -> str:
-    """HTML-escape text."""
+def _esc(text) -> str:
+    """HTML-escape text. Converts non-string types to str first."""
+    if not isinstance(text, str):
+        text = str(text)
     return html.escape(text, quote=True)
 
 

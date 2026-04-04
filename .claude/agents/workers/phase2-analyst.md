@@ -173,10 +173,15 @@ For **every** signal, produce a Korean translation of the title in `title_ko`. T
 
 #### D. Output Format per Signal (Step 2.1)
 
+> **v3.9.0 — SOT Schema Compliance**: Field names MUST match `phase2_output_schema.classified_signals`
+> in `workflow-registry.yaml`. The `category` field uses **single-letter codes** ("S", "T", "E", "Env", "P", "s")
+> — NOT full names like "E_Economic" or "T_Technological". This ensures uniform downstream consumption
+> by dashboard, statistics engine, evolution tracker, and all other data consumers.
+
 ```json
 {
   "id": "signal-001",
-  "final_category": "T",
+  "category": "T",
   "classification_confidence": 0.92,
   "fssf_type": "Precursor Event",
   "fssf_confidence": 0.87,

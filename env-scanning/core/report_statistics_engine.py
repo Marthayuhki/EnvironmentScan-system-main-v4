@@ -275,8 +275,9 @@ def compute_steeps_distribution(signals: list[dict]) -> dict[str, int]:
     """
     dist = {code: 0 for code in STEEPS_ORDER}
     for signal in signals:
-        # Try all known field names (WF1/2/4 use "category", WF3 uses "steeps_category")
+        # Try all known field names: canonical "category" (v3.9.0), legacy "steeps" (WF1/WF2)
         cat = (signal.get("category")
+               or signal.get("steeps")                    # WF1/WF2 legacy (pre-v3.9.0)
                or signal.get("steeps_category")
                or signal.get("final_category")
                or signal.get("preliminary_category")

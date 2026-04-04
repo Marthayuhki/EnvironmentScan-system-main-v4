@@ -266,11 +266,23 @@ class PriorityScoreCalculator:
             max(PRIORITY_SCORE_MIN, min(PRIORITY_SCORE_MAX, priority_score)), 3
         )
 
+        # Resolve STEEPs: prefer 'category' (SOT schema v3.9.0), fall back to
+        # 'final_category' (old agent spec) and 'steeps' (WF1/WF2 legacy).
+        # Normalize full names ("E_Economic") to single codes ("E").
+        raw_steeps = (
+            classified.get("category")
+            or classified.get("final_category")
+            or classified.get("steeps")
+            or impact.get("steeps", "")
+        )
+        if isinstance(raw_steeps, str) and "_" in raw_steeps:
+            raw_steeps = raw_steeps.split("_")[0]  # "E_Economic" → "E"
+
         return {
             "rank": None,  # assigned after sorting
             "id": signal_id,
             "title": classified.get("title", impact.get("title", "")),
-            "steeps": classified.get("steeps", impact.get("steeps", "")),
+            "steeps": raw_steeps,
             "fssf_type": classified.get("fssf_type", ""),
             "three_horizons": classified.get("three_horizons", ""),
             # Core scoring
@@ -352,6 +364,18 @@ class PriorityScoreCalculator:
                 return int(val)
         return None
 
+    @staticmethod
+    def _text_to_1_5(val, mapping: dict[str, float]) -> float | None:
+        """Convert text labels to 1-5 numeric. Returns None if not a text label."""
+        if isinstance(val, str) and not val.replace(".", "").replace("-", "").isdigit():
+            return mapping.get(val.upper())
+        return None
+
+    # Text→numeric mappings for WF1/WF2 legacy text labels (v3.9.0)
+    _IMPACT_TEXT = {"CRITICAL": 4.8, "HIGH": 4.0, "MEDIUM": 3.0, "LOW": 2.0, "MINIMAL": 1.0}
+    _URGENCY_TEXT = {"IMMEDIATE": 4.8, "HIGH": 4.0, "MEDIUM": 3.0, "LOW": 2.0}
+    _NOVELTY_TEXT = {"HIGH": 4.5, "MEDIUM": 3.0, "LOW": 1.5}
+
     def _get_impact_score(
         self, impact: dict, classified: dict, psst_score: float
     ) -> float:
@@ -364,8 +388,12 @@ class PriorityScoreCalculator:
           3. Proxy from psst_score (0–100 → 0–5 rescale)
         """
         # Direct LLM-assigned score
-        raw = impact.get("impact_score") or classified.get("impact_score")
+        raw = impact.get("impact_score") or classified.get("impact_score") or classified.get("impact")
         if raw is not None:
+            # Handle text labels (WF1/WF2 legacy: "CRITICAL", "HIGH", etc.)
+            text_val = self._text_to_1_5(raw, self._IMPACT_TEXT)
+            if text_val is not None:
+                return text_val
             return float(max(1.0, min(5.0, float(raw))))
 
         # Formula from affected_domains + first/second order impacts
@@ -430,8 +458,12 @@ class PriorityScoreCalculator:
         Python maps it to a numeric score.
         """
         # Direct LLM-assigned urgency score
-        raw = classified.get("urgency") or impact.get("urgency")
+        raw = classified.get("urgency") or classified.get("urgency_score") or impact.get("urgency")
         if raw is not None:
+            # Handle text labels (WF1/WF2 legacy: "IMMEDIATE", "HIGH", etc.)
+            text_val = self._text_to_1_5(raw, self._URGENCY_TEXT)
+            if text_val is not None:
+                return text_val
             return float(max(1.0, min(5.0, float(raw))))
 
         status = (
@@ -449,6 +481,10 @@ class PriorityScoreCalculator:
         for key in ("innovative_capacity", "novelty", "novelty_score"):
             val = classified.get(key) or impact.get(key)
             if val is not None:
+                # Handle text labels (WF1/WF2 legacy: "HIGH", "MEDIUM", etc.)
+                text_val = self._text_to_1_5(val, self._NOVELTY_TEXT)
+                if text_val is not None:
+                    return text_val
                 return float(max(1.0, min(5.0, float(val))))
         return 3.0  # neutral fallback
 

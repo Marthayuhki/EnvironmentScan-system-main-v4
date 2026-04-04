@@ -108,8 +108,8 @@ def compute_steeps_from_classified(
     """
     counter = Counter()
     for sig in classified.get("signals", []):
-        # WF1/WF2/WF4 use "category", WF3 uses "steeps_category"
-        cat = sig.get("category") or sig.get("steeps_category", "")
+        # WF3/WF4 use "category", WF1/WF2 use "steeps"
+        cat = sig.get("category") or sig.get("steeps") or sig.get("steeps_category", "")
         sid = sig.get("id", "")
 
         if ranked_ids and sid not in ranked_ids:
@@ -156,58 +156,108 @@ def compute_three_horizons(
 # Top Signals (ranked + classified JOIN)
 # ---------------------------------------------------------------------------
 
+def _text_to_numeric(val, mapping: Dict[str, float], scale_max: float = 10.0) -> float:
+    """Convert text labels (CRITICAL/HIGH/MEDIUM/LOW) to numeric 0-10 scale.
+    If already numeric, normalize 0-100 → 0-10 if needed.
+
+    LEGACY COMPATIBILITY (v3.9.0): This function handles pre-v3.9.0 WF1/WF2 data
+    where classified-signals used text labels instead of numeric scores. After v3.9.0,
+    all workflows produce numeric scores via priority_score_calculator.py (Python 원천봉쇄).
+    This fallback will be removed once all historical data has been reprocessed.
+    """
+    if isinstance(val, (int, float)):
+        return round(val / 10.0, 1) if val > scale_max else float(val)
+    if isinstance(val, str):
+        return mapping.get(val.upper(), 0)
+    return 0
+
+
+# LEGACY text→numeric mappings for pre-v3.9.0 WF1/WF2 classified signals.
+# Future runs use priority_score_calculator.py which produces numeric scores directly.
+_IMPACT_MAP = {"CRITICAL": 9.5, "HIGH": 8.0, "MEDIUM": 6.0, "LOW": 4.0}
+_NOVELTY_MAP = {"HIGH": 8.0, "MEDIUM": 6.0, "LOW": 4.0}
+_URGENCY_MAP = {"IMMEDIATE": 9.5, "HIGH": 8.0, "MEDIUM": 6.0, "LOW": 4.0}
+
+
 def build_top_signals(
     ranked: Dict, classified: Dict, n: int = 20
 ) -> List[Dict]:
     """
     Join priority-ranked ordering with classified-signals detail.
     All data from source JSON — zero LLM regeneration.
+
+    Handles two distinct data formats:
+      - WF1/WF2: steeps (direct), impact/novelty/urgency as TEXT or 0-100 numeric,
+                  priority_score 0-100
+      - WF3/WF4: category (code), impact_score/novelty_score as 0-10 numeric,
+                  psst_score/psst_grade, fssf_type, three_horizons
     """
     classified_list = classified.get("signals") or classified.get("items") or []
     classified_by_id = {s["id"]: s for s in classified_list}
     result = []
 
-    for r in ranked.get("ranked_signals", [])[:n]:
+    for r in (ranked.get("ranked_signals") or ranked.get("signals") or [])[:n]:
         detail = classified_by_id.get(r["id"], {})
         cls = detail.get("classification") or {}  # WF1 nested structure
 
-        # STEEPs: WF3/WF4 → .category, WF2 → .steeps_primary, WF1 → .classification.steeps_category
+        # --- STEEPs ---
+        # WF3/WF4 → .category ("P", "E", etc.)
+        # WF1/WF2 → .steeps ("E_Economic", "T_Technological", etc.)
+        # Also check ranked signal for .steeps as fallback
         cat_raw = (detail.get("category")
+                   or detail.get("steeps")                        # WF1/WF2 direct
                    or detail.get("steeps_category")
-                   or detail.get("steeps_primary", "")          # WF2
-                   or cls.get("steeps_category", ""))            # WF1 nested
+                   or detail.get("steeps_primary", "")            # WF2
+                   or cls.get("steeps_category", "")              # WF1 nested
+                   or r.get("steeps", ""))                        # ranked fallback
 
-        # Impact: WF3/WF4 → .impact_score, WF2 → .significance, WF1 → .classification.impact_score
-        # WF1 uses 0-100 scale; WF2/WF3/WF4 use 0-10. Normalize to 0-10.
-        impact = (detail.get("impact_score")
-                  or detail.get("significance")                  # WF2
-                  or cls.get("impact_score")                     # WF1 nested
-                  or 0)
-        if isinstance(impact, (int, float)) and impact > 10:
-            impact = round(impact / 10.0, 1)                     # 0-100 → 0-10
+        # --- Impact ---
+        # WF3/WF4 → .impact_score (numeric 0-10)
+        # WF1/WF2 → .impact (text: "CRITICAL"/"HIGH") or .priority_score (0-100)
+        impact_raw = (detail.get("impact_score")
+                      or detail.get("significance")
+                      or cls.get("impact_score")
+                      or detail.get("impact")                     # WF1/WF2 text
+                      or r.get("impact")                          # ranked fallback
+                      or 0)
+        impact = _text_to_numeric(impact_raw, _IMPACT_MAP)
 
-        # Novelty: WF3/WF4 → .novelty_score, WF2 → .novelty, WF1 → .classification.novelty
-        # Same normalization: WF1 uses 0-100 scale
-        novelty = (detail.get("novelty_score")
-                   or detail.get("novelty")                      # WF2
-                   or cls.get("novelty")                         # WF1 nested
-                   or 0)
-        if isinstance(novelty, (int, float)) and novelty > 10:
-            novelty = round(novelty / 10.0, 1)                   # 0-100 → 0-10
+        # --- Novelty ---
+        # WF3/WF4 → .novelty_score (numeric)
+        # WF1/WF2 → .novelty (text: "HIGH"/"MEDIUM")
+        novelty_raw = (detail.get("novelty_score")
+                       or detail.get("novelty")                   # WF1/WF2 text
+                       or cls.get("novelty")
+                       or r.get("novelty")                        # ranked fallback
+                       or 0)
+        novelty = _text_to_numeric(novelty_raw, _NOVELTY_MAP)
 
-        # Urgency: WF1 → .classification.urgency
-        # Same normalization: WF1 uses 0-100 scale
-        urgency = (detail.get("urgency_score")
-                   or cls.get("urgency")                         # WF1 nested
-                   or 0)
-        if isinstance(urgency, (int, float)) and urgency > 10:
-            urgency = round(urgency / 10.0, 1)                   # 0-100 → 0-10
+        # --- Urgency ---
+        # WF3/WF4 → .urgency_score (numeric)
+        # WF1/WF2 → .urgency (text: "IMMEDIATE"/"HIGH")
+        urgency_raw = (detail.get("urgency_score")
+                       or detail.get("urgency")                   # WF1/WF2 text
+                       or cls.get("urgency")
+                       or r.get("urgency")                        # ranked fallback
+                       or 0)
+        urgency = _text_to_numeric(urgency_raw, _URGENCY_MAP)
+
+        # --- pSST score ---
+        # WF3/WF4 → ranked.psst_score (0-100)
+        # WF1/WF2 → ranked.priority_score (0-100) or detail.priority_score (0-100)
+        psst = (r.get("psst_score")
+                or r.get("priority_score")
+                or detail.get("priority_score")
+                or 0)
+        # Normalize: if it looks like 0-10 scale (e.g. 9.7), convert to 0-100
+        if isinstance(psst, (int, float)) and 0 < psst <= 10:
+            psst = round(psst * 10, 1)
 
         result.append({
             "rank": r.get("rank", 0),
             "id": r.get("id", ""),
             "title": r.get("title", ""),
-            "title_ko": detail.get("title_ko", ""),
+            "title_ko": detail.get("title_ko", "") or r.get("title_ko", ""),
             "steeps": normalize_steeps(cat_raw),
             "steeps_raw": cat_raw,
             "fssf_type": detail.get("fssf_type", r.get("fssf_type", "")),
@@ -215,7 +265,7 @@ def build_top_signals(
             "impact_score": impact,
             "novelty_score": novelty,
             "urgency_score": urgency,
-            "psst_score": r.get("psst_score", 0),
+            "psst_score": psst,
             "psst_grade": r.get("psst_grade", ""),
             "source": detail.get("source", r.get("source", "")),
             "keywords": detail.get("keywords", []),
@@ -525,7 +575,7 @@ class DashboardDataExtractor:
             return None
 
         return set(
-            s["id"] for s in ranked.get("ranked_signals", [])[:n]
+            s["id"] for s in (ranked.get("ranked_signals") or ranked.get("signals") or [])[:n]
         )
 
     def extract_kpis(self) -> Dict:
@@ -616,7 +666,7 @@ class DashboardDataExtractor:
             if not classified or not ranked:
                 continue
             n = self.wf_results[wf_key].get("signal_count", 10)
-            selected_ids = set(s["id"] for s in ranked.get("ranked_signals", [])[:n])
+            selected_ids = set(s["id"] for s in (ranked.get("ranked_signals") or ranked.get("signals") or [])[:n])
             all_signals[wf_key] = [
                 s for s in classified.get("signals", []) if s["id"] in selected_ids
             ]
@@ -688,11 +738,11 @@ class DashboardDataExtractor:
                 if not classified or not ranked:
                     continue
                 n = self.wf_results[wf_key].get("signal_count", 10)
-                selected_ids = set(s["id"] for s in ranked.get("ranked_signals", [])[:n])
+                selected_ids = set(s["id"] for s in (ranked.get("ranked_signals") or ranked.get("signals") or [])[:n])
                 for sig in classified.get("signals", []):
                     if sig["id"] not in selected_ids:
                         continue
-                    cat = normalize_steeps(sig.get("category") or sig.get("steeps_category", ""))
+                    cat = normalize_steeps(sig.get("category") or sig.get("steeps") or sig.get("steeps_category", ""))
                     kws = set(k.lower() for k in sig.get("keywords", []))
                     title_words = set(sig.get("title", "").lower().split())
                     all_terms = kws | title_words
@@ -755,6 +805,12 @@ class DashboardDataExtractor:
         if integrated_report_path:
             narratives = self.extract_narratives(integrated_report_path)
             print(f"  Narratives (EN): {len(narratives)} sections extracted")
+            if len(narratives) == 0:
+                print(f"  ⚠️  WARNING: 0 narratives extracted! Tabs 1,7,8,9 will be empty.")
+                print(f"     File: {integrated_report_path} (exists={integrated_report_path.exists()}, "
+                      f"size={integrated_report_path.stat().st_size if integrated_report_path.exists() else 'N/A'})")
+        else:
+            print(f"  ⚠️  WARNING: --integrated-report not provided; narratives will be empty (tabs 1,7,8,9)")
 
             # Auto-infer KO report path: {name}.md → {name}-ko.md
             # Convention matches SOT deliverables.report_ko pattern
@@ -813,7 +869,7 @@ def main():
     parser.add_argument("--registry", required=True, help="Path to workflow-registry.yaml")
     parser.add_argument("--status-file", required=True, help="Path to master-status JSON")
     parser.add_argument("--output", required=True, help="Output path for dashboard-data.json")
-    parser.add_argument("--integrated-report", help="Path to integrated report .md (for narrative extraction)")
+    parser.add_argument("--integrated-report", required=True, help="Path to integrated report .md (for narrative extraction) — REQUIRED: tabs 1,7,8,9 depend on this")
     args = parser.parse_args()
 
     base_path = Path(args.registry).parent.parent  # env-scanning/config/ → env-scanning/
